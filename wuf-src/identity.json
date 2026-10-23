@@ -1,0 +1,9 @@
+{
+  "name": "WUF Translate",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAoqL/766DeGi6SlW8V6Z/melet9oYbT6Egg51Z9gfoQRZKj9/CZBv6CUeBCsqfAXajkI/2c2fG5iWaAEByO50DlqqCrF/bMnwqDaIujfDMrEx8lhvp3lf6uN4ss4Qv6ALUzlo6kK7qRLp8f2RR4tLxSaC+XW7yHIZ5tzHPDYr5G4bfIZz5sfsD3DioigFIAmdCTe7XZzjnje5VQpzFeOwjotk4d6ssHcDzrgo2nF8Q4lgLwKRXEmTz3KHg9pxGjftHFJAj+T79INy+h8+IFIDwKtUcOKg3JiowO8KiLauIpXbh9XXz8HLP0282PNhh9H8gA3VL2AsLo1QSVNNsJN/GwIDAQAB",
+  "extensionId": "iecdpfnjngfljdlpookikhidlbfbmidb",
+  "nativeHost": "com.wuf_translate.watchdog",
+  "allowedOrigins": [
+    "chrome-extension://iecdpfnjngfljdlpookikhidlbfbmidb/"
+  ]
+}

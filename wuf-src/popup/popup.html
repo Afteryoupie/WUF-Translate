@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="zh-TW">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WUF Translate</title>
+    <script src="theme-init.js"></script>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="wuf-popup" id="wuf-popup-root">
+      <!-- 1. Header with Dog Icon, Brand Title & Quick Theme/Settings Controls -->
+      <header class="wuf-header">
+        <div class="wuf-brand">
+          <img src="icons/icon-128.png" alt="WUF" class="wuf-title-icon" width="26" height="26" />
+          <div class="wuf-title-group">
+            <h1 class="wuf-title" data-wuf-i18n="app.name">WUF Translate</h1>
+            <span id="wuf-model-pill" class="wuf-pill">Local</span>
+          </div>
+        </div>
+        <div class="wuf-header-actions">
+          <button
+            type="button"
+            id="wuf-theme-toggle"
+            class="wuf-icon-btn"
+            data-wuf-i18n-title="popup.toggleTheme"
+            title="Toggle theme"
+            aria-label="Toggle theme"
+          >🌓</button>
+          <button
+            type="button"
+            id="wuf-open-options"
+            class="wuf-icon-btn"
+            data-wuf-i18n-title="common.openOptions"
+            title="Open Options"
+            aria-label="Open Options"
+          >⚙️</button>
+        </div>
+      </header>
+
+      <!-- 2. Primary Page Action (Translate / Restore / Edit) -->
+      <section class="wuf-action-section">
+        <button
+          type="button"
+          id="wuf-btn-translate-webpage"
+          class="wuf-tool-btn"
+          data-mode="translate"
+        >
+          <span class="wuf-action-icon">🌐</span>
+          <span id="wuf-translate-label" data-wuf-i18n="popup.translatePage">翻譯網頁</span>
+          <span class="wuf-shortcut-cue">Alt+S</span>
+        </button>
+        <button
+          type="button"
+          id="wuf-btn-edit-page"
+          class="wuf-secondary-action-btn"
+          hidden
+          data-wuf-i18n="popup.editTranslations"
+        >
+          編輯譯文
+        </button>
+      </section>
+
+      <!-- 2.5 Current Progress Status Card -->
+      <section id="wuf-progress-section" class="wuf-progress-card">
+        <div class="wuf-progress-row">
+          <span class="wuf-progress-icon" id="wuf-progress-icon">📄</span>
+          <span class="wuf-progress-text" id="wuf-progress-text" data-wuf-i18n="popup.progressOriginal">原文頁面（未翻譯）</span>
+        </div>
+        <div class="wuf-progress-bar-wrap" id="wuf-progress-bar-wrap" hidden>
+          <div class="wuf-progress-bar" id="wuf-progress-bar" style="width: 0%;"></div>
+        </div>
+      </section>
+
+      <!-- 3. Core Translation Settings (Display Mode, Target Language, Auto-site, OpenCC) -->
+      <section class="wuf-settings-card">
+        <!-- Display Mode Toggle -->
+        <div class="wuf-row">
+          <span class="wuf-row-label" data-wuf-i18n="options.displayModeLabel">顯示模式</span>
+          <div class="wuf-seg-group" role="radiogroup">
+            <button
+              type="button"
+              id="wuf-mode-single"
+              class="wuf-seg-btn"
+              role="radio"
+              aria-checked="false"
+              data-mode="monolingual"
+              data-wuf-i18n="options.displayMonolingual"
+            >
+              僅顯示譯文
+            </button>
+            <button
+              type="button"
+              id="wuf-mode-dual"
+              class="wuf-seg-btn active"
+              role="radio"
+              aria-checked="true"
+              data-mode="bilingual"
+              data-wuf-i18n="options.displayBilingual"
+            >
+              雙語對照
+            </button>
+          </div>
+        </div>
+
+        <!-- Target Language Selector -->
+        <div class="wuf-row">
+          <label for="wuf-target-lang-select" class="wuf-row-label" data-wuf-i18n="popup.translateTo">翻譯成</label>
+          <select id="wuf-target-lang-select" class="wuf-select">
+            <option value="zh-TW">繁體中文（台灣）</option>
+            <option value="zh-CN">简体中文（中国）</option>
+            <option value="en">English</option>
+            <option value="ja">日本語</option>
+            <option value="ko">한국어</option>
+            <option value="es">Español</option>
+            <option value="fr">Français</option>
+            <option value="de">Deutsch</option>
+          </select>
+        </div>
+
+        <!-- Auto-translate Current Site Switch -->
+        <div class="wuf-row">
+          <span class="wuf-row-label" id="wuf-auto-site-label" data-wuf-i18n="popup.autoTranslateSite">自動翻譯指定網站</span>
+          <label class="wuf-switch">
+            <input type="checkbox" id="wuf-auto-site-toggle" />
+            <span class="wuf-slider"></span>
+          </label>
+        </div>
+
+        <!-- OpenCC Simplified/Traditional Conversion Switch -->
+        <div class="wuf-row" id="wuf-opencc-row">
+          <span class="wuf-row-label" data-wuf-i18n="popup.openccAuto">簡繁自動互轉（免費）</span>
+          <label class="wuf-switch">
+            <input type="checkbox" id="wuf-opencc-toggle" />
+            <span class="wuf-slider"></span>
+          </label>
+        </div>
+      </section>
+
+      <!-- 4. Context-sensitive Section: YouTube Subtitles (Shown on YouTube) -->
+      <section class="wuf-settings-card wuf-context-card" id="wuf-yt-box" hidden>
+        <div class="wuf-row">
+          <div class="wuf-yt-label-group">
+            <span class="wuf-row-label" data-wuf-i18n="popup.ytSubtitlesToggle">YouTube 雙語字幕</span>
+            <button
+              type="button"
+              id="wuf-btn-translate-youtube"
+              class="wuf-tool-btn"
+              data-wuf-i18n="popup.featureYoutubeSubtitles"
+            >
+              YouTube 雙語字幕攔截與斷句決策
+            </button>
+          </div>
+          <label class="wuf-switch">
+            <input type="checkbox" id="wuf-yt-subtitles-toggle" />
+            <span class="wuf-slider"></span>
+          </label>
+        </div>
+        <div class="wuf-row">
+          <label for="wuf-yt-caption-size" class="wuf-row-label" data-wuf-i18n="popup.ytCaptionSize">字幕大小</label>
+          <select id="wuf-yt-caption-size" class="wuf-select-sm">
+            <option value="100">100%</option>
+            <option value="110">110%</option>
+            <option value="120">120%</option>
+            <option value="130">130%</option>
+            <option value="140">140%</option>
+            <option value="150">150%</option>
+            <option value="160">160%</option>
+            <option value="180">180%</option>
+            <option value="200">200%</option>
+          </select>
+        </div>
+      </section>
+
+      <!-- 5. Engine & Local Watchdog Model Card -->
+      <section class="wuf-settings-card wuf-model-card">
+        <div class="wuf-model-card-header">
+          <div class="wuf-status-line">
+            <span id="wuf-status-dot" class="wuf-dot"></span>
+            <span id="wuf-status-text" class="wuf-status-text">讀取中…</span>
+          </div>
+          <button
+            type="button"
+            id="wuf-wake-btn"
+            class="wuf-wake-btn"
+            hidden
+            data-wuf-i18n="status.wakeButton"
+          >
+            喚醒本機模型
+          </button>
+        </div>
+
+        <div class="wuf-row">
+          <label for="wuf-engine-select" class="wuf-row-label" data-wuf-i18n="popup.engineLabel">翻譯引擎</label>
+          <select id="wuf-engine-select" class="wuf-select">
+            <option value="openai-compat-local">本地模型 (Watchdog / Ollama)</option>
+            <option value="openai-compat-online">線上自訂 (OpenAI 相容 / OpenRouter)</option>
+            <option value="google-translate">Google 翻譯 (免費備援)</option>
+          </select>
+        </div>
+
+        <div class="wuf-row" id="wuf-local-model-row">
+          <label for="wuf-local-model-select" class="wuf-row-label" data-wuf-i18n="popup.localModelOverride">本地模型</label>
+          <select id="wuf-local-model-select" class="wuf-select wuf-mono"></select>
+        </div>
+      </section>
+
+      <!-- 6. Cache Management -->
+      <div class="wuf-cache-bar">
+        <span id="wuf-cache-info" class="wuf-cache-info">快取：—</span>
+        <button type="button" id="wuf-clear-cache-btn" class="wuf-link-btn" data-wuf-i18n="popup.clearCache">清除快取</button>
+        <span id="wuf-clear-confirm" class="wuf-confirm-box" hidden>
+          <span data-wuf-i18n="popup.confirmClear">確定清除？</span>
+          <button type="button" id="wuf-confirm-yes" class="wuf-link-btn wuf-danger" data-wuf-i18n="popup.yes">是</button>
+          <button type="button" id="wuf-confirm-no" class="wuf-link-btn" data-wuf-i18n="popup.no">否</button>
+        </span>
+      </div>
+
+      <!-- 7. Footer: Document Translator & Shortcut Hint -->
+      <footer class="wuf-footer">
+        <span class="wuf-shortcut-hint" data-wuf-i18n="popup.shortcutHint">Alt+S 翻譯／還原</span>
+      </footer>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

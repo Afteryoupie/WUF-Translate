@@ -1,0 +1,609 @@
+<!doctype html>
+<html lang="zh-TW">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WUF Translate Settings</title>
+    <script src="theme-init.js"></script>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main class="wuf-options" id="wuf-options-root">
+      <header class="wuf-options-header">
+        <div class="wuf-brand">
+          <span class="wuf-badge-logo" aria-hidden="true">WUF</span>
+          <div>
+            <h1 data-wuf-i18n="options.title">WUF Translate 擴充功能設定</h1>
+            <p class="wuf-subtitle" data-wuf-i18n="app.subtitle">
+              邊牧雙模 AI 與本機 Watchdog 翻譯工具
+            </p>
+          </div>
+        </div>
+        <span id="wuf-save-status" class="wuf-save-pill" data-wuf-i18n="common.savedAuto">
+          設定已自動儲存
+        </span>
+      </header>
+
+      <nav class="wuf-tabs" role="tablist" aria-label="WUF Settings Tabs" id="wuf-options-tablist">
+        <button
+          type="button"
+          role="tab"
+          id="wuf-tab-btn-general"
+          class="wuf-tab-btn"
+          aria-selected="true"
+          aria-controls="wuf-tab-panel-general"
+          data-wuf-tab="general"
+          data-wuf-i18n="options.tab.general"
+        >
+          一般設定
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="wuf-tab-btn-webpage"
+          class="wuf-tab-btn"
+          aria-selected="false"
+          aria-controls="wuf-tab-panel-webpage"
+          data-wuf-tab="webpage"
+          data-wuf-i18n="options.tab.webpage"
+          tabindex="-1"
+        >
+          網頁翻譯
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="wuf-tab-btn-youtube"
+          class="wuf-tab-btn"
+          aria-selected="false"
+          aria-controls="wuf-tab-panel-youtube"
+          data-wuf-tab="youtube"
+          data-wuf-i18n="options.tab.youtube"
+          tabindex="-1"
+        >
+          YouTube 字幕翻譯
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="wuf-tab-btn-local"
+          class="wuf-tab-btn"
+          aria-selected="false"
+          aria-controls="wuf-tab-panel-local"
+          data-wuf-tab="local"
+          data-wuf-i18n="options.tab.local"
+          tabindex="-1"
+        >
+          本機自訂模型
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="wuf-tab-btn-online"
+          class="wuf-tab-btn"
+          aria-selected="false"
+          aria-controls="wuf-tab-panel-online"
+          data-wuf-tab="online"
+          data-wuf-i18n="options.tab.online"
+          tabindex="-1"
+        >
+          線上自訂模型
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="wuf-tab-btn-data"
+          class="wuf-tab-btn"
+          aria-selected="false"
+          aria-controls="wuf-tab-panel-data"
+          data-wuf-tab="data"
+          data-wuf-i18n="options.tab.data"
+          tabindex="-1"
+        >
+          備份與重設
+        </button>
+      </nav>
+
+      <!-- Tab 1: General Settings -->
+      <div
+        role="tabpanel"
+        id="wuf-tab-panel-general"
+        class="wuf-tab-panel"
+        aria-labelledby="wuf-tab-btn-general"
+        data-wuf-panel="general"
+      >
+        <section class="wuf-section">
+          <h2 data-wuf-i18n="options.appearanceSection">介面語言與主題</h2>
+          <div class="wuf-grid-2">
+            <label class="wuf-field">
+              <span data-wuf-i18n="locale.label">介面語言</span>
+              <select id="wuf-opt-locale">
+                <option value="zh-TW">繁體中文 (zh-TW)</option>
+                <option value="zh-CN">简体中文 (zh-CN)</option>
+                <option value="en">English (en)</option>
+                <option value="ja">日本語 (ja)</option>
+                <option value="ko">한국어 (ko)</option>
+                <option value="es">Español (es)</option>
+                <option value="fr">Français (fr)</option>
+                <option value="de">Deutsch (de)</option>
+              </select>
+            </label>
+            <label class="wuf-field">
+              <span data-wuf-i18n="theme.label">外觀主題</span>
+              <select id="wuf-opt-theme">
+                <option value="system" data-wuf-i18n="theme.system">跟隨系統</option>
+                <option value="light" data-wuf-i18n="theme.light">淺色模式</option>
+                <option value="dark" data-wuf-i18n="theme.dark">深色模式</option>
+              </select>
+            </label>
+          </div>
+        </section>
+
+        <section class="wuf-section">
+          <h2 data-wuf-i18n="options.activeProviderSection">預設自訂模型設定檔</h2>
+          <div class="wuf-form-stack">
+            <div class="wuf-grid-2">
+              <label class="wuf-field">
+                <span data-wuf-i18n="options.activeProviderLabel">目前啟用的自訂模型設定檔</span>
+                <select id="wuf-opt-active-provider">
+                  <option value="local" data-wuf-i18n="common.local">本機自訂模型</option>
+                  <option value="online" data-wuf-i18n="common.online">線上自訂模型</option>
+                </select>
+              </label>
+              <label class="wuf-field">
+                <span data-wuf-i18n="options.openccVariantLabel">OpenCC 轉換規則</span>
+                <select id="wuf-opt-opencc-variant">
+                  <option value="s2twp">s2twp (簡體 → 繁體台灣慣用詞)</option>
+                  <option value="tw2sp">tw2sp (繁體台灣 → 簡體大陸慣用詞)</option>
+                  <option value="s2t">s2t (簡體 → 繁體標準)</option>
+                  <option value="t2s">t2s (繁體 → 簡體標準)</option>
+                </select>
+              </label>
+            </div>
+            <label class="wuf-checkbox">
+              <input type="checkbox" id="wuf-opt-opencc-enabled" />
+              <span data-wuf-i18n="options.openccEnabledLabel">啟用 OpenCC 中文簡繁與詞彙轉換後處理</span>
+            </label>
+          </div>
+        </section>
+      </div>
+
+      <!-- Tab 2: Webpage Translation -->
+      <div
+        role="tabpanel"
+        id="wuf-tab-panel-webpage"
+        class="wuf-tab-panel"
+        aria-labelledby="wuf-tab-btn-webpage"
+        data-wuf-panel="webpage"
+        hidden
+      >
+        <section class="wuf-section">
+          <h2 data-wuf-i18n="options.webpagePresetCard">網頁翻譯設定 (Webpage Translation)</h2>
+          <div class="wuf-form-stack">
+            <div class="wuf-grid-2">
+              <label class="wuf-field">
+                <span data-wuf-i18n="options.engineLabel">翻譯引擎</span>
+                <select id="wuf-webpage-engine">
+                  <option value="openai-compat-local" data-wuf-i18n="engine.openaiCompatLocal"></option>
+                  <option value="openai-compat-online" data-wuf-i18n="engine.openaiCompatOnline"></option>
+                  <option value="google-translate" data-wuf-i18n="engine.googleTranslate"></option>
+                </select>
+              </label>
+              <label class="wuf-field">
+                <span data-wuf-i18n="options.targetLanguageLabel">目標語言</span>
+                <input type="text" id="wuf-webpage-target-lang" placeholder="zh-TW" />
+              </label>
+            </div>
+            <div class="wuf-grid-2">
+              <label class="wuf-field">
+                <span data-wuf-i18n="options.displayModeLabel">顯示模式</span>
+                <select id="wuf-webpage-display-mode">
+                  <option value="bilingual" data-wuf-i18n="options.displayBilingual">雙語對照</option>
+                  <option value="monolingual" data-wuf-i18n="options.displayMonolingual">僅顯示譯文</option>
+                </select>
+              </label>
+              <label class="wuf-field">
+                <span data-wuf-i18n="options.modelOverrideLabel">專屬模型覆寫</span>
+                <input type="text" id="wuf-webpage-model-override" placeholder="" />
+                <select id="wuf-webpage-model-override-select" hidden></select>
+              </label>
+            </div>
+            <div class="wuf-field">
+              <label class="wuf-field-checkbox">
+                <input type="checkbox" id="wuf-webpage-cross-tab-sticky" />
+                <span data-wuf-i18n="options.crossTabStickyLabel">跨分頁延續翻譯（從已翻譯頁面點連結開啟新分頁時自動翻譯）</span>
+              </label>
+              <p class="wuf-hint" data-wuf-i18n="options.crossTabStickyHint">
+                預設關閉。關閉後僅手動翻譯當前分頁，新開啟的分頁不會自動跟著翻譯，避免連續開分頁時吃光本機 LLM 資源。
+              </p>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- Tab 3: YouTube Subtitle Translation -->
+      <div
+        role="tabpanel"
+        id="wuf-tab-panel-youtube"
+        class="wuf-tab-panel"
+        aria-labelledby="wuf-tab-btn-youtube"
+        data-wuf-panel="youtube"
+        hidden
+      >
+        <section class="wuf-section">
+          <h2 data-wuf-i18n="options.subtitlePresetCard">YouTube 字幕翻譯設定 (YouTube Subtitle Translation)</h2>
+          <div class="wuf-form-stack">
+            <div class="wuf-grid-2">
+              <label class="wuf-field">
+                <span data-wuf-i18n="options.engineLabel">翻譯引擎</span>
+                <select id="wuf-subtitle-engine">
+                  <option value="openai-compat-local" data-wuf-i18n="engine.openaiCompatLocal"></option>
+                  <option value="openai-compat-online" data-wuf-i18n="engine.openaiCompatOnline"></option>
+                  <option value="google-translate" data-wuf-i18n="engine.googleTranslate"></option>
+                </select>
+              </label>
+              <label class="wuf-field">
+                <span data-wuf-i18n="options.targetLanguageLabel">目標語言</span>
+                <input type="text" id="wuf-subtitle-target-lang" placeholder="zh-TW" />
+              </label>
+            </div>
+            <label class="wuf-field">
+              <span data-wuf-i18n="options.modelOverrideLabel">專屬模型覆寫</span>
+              <input type="text" id="wuf-subtitle-model-override" placeholder="" />
+              <select id="wuf-subtitle-model-override-select" hidden></select>
+            </label>
+          </div>
+        </section>
+
+        <section class="wuf-section">
+          <h2 data-wuf-i18n="options.subtitlePromptSection">進階：字幕翻譯 Prompt</h2>
+          <div class="wuf-form-stack">
+            <label class="wuf-field">
+              <small class="wuf-hint" data-wuf-i18n="options.subtitlePromptHint">
+                字幕翻譯使用獨立的 prompt，與文章翻譯分開。字幕著重口語化、逐段保持、不合併
+              </small>
+              <textarea id="wuf-subtitle-system-prompt" rows="4"></textarea>
+            </label>
+          </div>
+        </section>
+
+        <section class="wuf-section">
+          <h2 data-wuf-i18n="options.subtitleBatchSection">進階：字幕分批翻譯參數</h2>
+          <div class="wuf-form-stack">
+            <small class="wuf-hint" data-wuf-i18n="options.subtitleBatchDesc">
+              字幕依時間分批翻譯。每批翻譯涵蓋一段時間內的字幕，在快用完前提前翻好下一批。一般使用者不需要動，維持預設即可
+            </small>
+            <label class="wuf-field">
+              <span data-wuf-i18n="options.subtitleBatchWindowLabel">每批涵蓋秒數</span>
+              <input
+                type="number"
+                id="wuf-subtitle-batch-window"
+                min="5"
+                max="300"
+                step="1"
+                value="30"
+              />
+              <small class="wuf-hint" data-wuf-i18n="options.subtitleBatchWindowHint">
+                每次送去翻譯的字幕涵蓋幾秒（預設 30 秒）。數字越大每次翻越多，但第一次等待時間也越長
+              </small>
+            </label>
+            <label class="wuf-field">
+              <span data-wuf-i18n="options.subtitlePrefetchLeadLabel">提前觸發秒數</span>
+              <input
+                type="number"
+                id="wuf-subtitle-prefetch-lead"
+                min="1"
+                max="120"
+                step="1"
+                value="10"
+              />
+              <small class="wuf-hint" data-wuf-i18n="options.subtitlePrefetchLeadHint">
+                在目前批次快用完前幾秒，提前翻好下一批（預設 10 秒）。建議不低於 5 秒
+              </small>
+            </label>
+          </div>
+        </section>
+
+        <section class="wuf-section">
+          <h2 data-wuf-i18n="options.decisionSectionTitle">字幕斷句與過濾決策模型</h2>
+          <div class="wuf-form-stack">
+            <div class="wuf-grid-2">
+              <label class="wuf-field">
+                <span data-wuf-i18n="options.decisionModeLabel">決策模型來源</span>
+                <select id="wuf-subtitle-decision-mode">
+                  <option value="laya" data-wuf-i18n="options.decisionMode.laya">
+                    本機 Laya 決策模型 (/v1/systemone)
+                  </option>
+                  <option value="custom" data-wuf-i18n="options.decisionMode.custom">
+                    自訂決策模型 (Custom Decision Model)
+                  </option>
+                  <option value="off" data-wuf-i18n="options.decisionMode.off">
+                    不使用決策模型（僅用本地時間軸規則）
+                  </option>
+                </select>
+              </label>
+              <label class="wuf-field" id="wuf-laya-endpoint-group">
+                <span data-wuf-i18n="options.layaEndpointLabel">Laya 決策服務端點 URL</span>
+                <input
+                  type="url"
+                  id="wuf-subtitle-laya-endpoint"
+                  placeholder="http://127.0.0.1:8080/v1/systemone"
+                />
+              </label>
+            </div>
+            <div class="wuf-grid-2" id="wuf-custom-decision-group">
+              <label class="wuf-field">
+                <span data-wuf-i18n="options.decisionCustomModelLabel">自訂決策模型名稱 (Model ID)</span>
+                <input
+                  type="text"
+                  id="wuf-subtitle-decision-custom-model"
+                  placeholder="qwen2.5-3b-instruct / openai/gpt-4o-mini"
+                />
+              </label>
+              <label class="wuf-field">
+                <span data-wuf-i18n="options.decisionCustomUrlLabel">
+                  自訂決策端點 Base URL（留空則共用翻譯端點）
+                </span>
+                <input
+                  type="url"
+                  id="wuf-subtitle-decision-custom-url"
+                  placeholder="http://127.0.0.1:8080/v1"
+                />
+              </label>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- Tab 4: Local Custom Model -->
+      <div
+        role="tabpanel"
+        id="wuf-tab-panel-local"
+        class="wuf-tab-panel"
+        aria-labelledby="wuf-tab-btn-local"
+        data-wuf-panel="local"
+        hidden
+      >
+        <section class="wuf-section" id="wuf-local-profile-card">
+          <h2 data-wuf-i18n="options.localProfileSection">本機自訂模型設定（Watchdog / Ollama / LAN）</h2>
+          <div class="wuf-form-stack">
+            <label class="wuf-field">
+              <span data-wuf-i18n="options.baseUrlLabel">API Base URL</span>
+              <input type="url" id="wuf-local-base-url" placeholder="http://127.0.0.1:8080/v1" />
+            </label>
+            <label class="wuf-field">
+              <span data-wuf-i18n="options.apiKeyLabel">API 金鑰</span>
+              <input type="password" id="wuf-local-api-key" autocomplete="off" />
+              <small class="wuf-hint" data-wuf-i18n="options.apiKeyLocalOnlyHint"></small>
+            </label>
+            <div class="wuf-field">
+              <span data-wuf-i18n="options.modelLabel">模型名稱 (Model ID)</span>
+              <div class="wuf-local-model-controls">
+                <select id="wuf-local-model-select"></select>
+                <input type="text" id="wuf-local-model-input" placeholder="" />
+                <div class="wuf-inline-buttons">
+                  <button
+                    type="button"
+                    id="wuf-local-model-refresh"
+                    class="wuf-btn wuf-btn-secondary"
+                    data-wuf-i18n="options.localModel.refreshButton"
+                  >
+                    重新讀取模型清單
+                  </button>
+                  <button
+                    type="button"
+                    id="wuf-local-model-clear"
+                    class="wuf-btn wuf-btn-ghost"
+                    data-wuf-i18n="options.localModel.clearButton"
+                  >
+                    回到服務預設模型
+                  </button>
+                  <button
+                    type="button"
+                    id="wuf-local-model-test"
+                    class="wuf-btn wuf-btn-primary"
+                    data-wuf-i18n="options.testModelButton"
+                  >
+                    測試模型運作
+                  </button>
+                </div>
+                <div id="wuf-local-test-result" class="wuf-test-result" hidden style="margin-top: 6px;"></div>
+              </div>
+              <small id="wuf-local-model-status" class="wuf-hint"></small>
+              <p
+                id="wuf-options-windows-fallback"
+                class="wuf-note"
+                hidden
+                data-wuf-i18n="status.windowsFallbackHint"
+              ></p>
+            </div>
+            <div class="wuf-grid-2">
+              <label class="wuf-field">
+                <span data-wuf-i18n="options.temperatureLabel">Temperature (0–2)</span>
+                <input type="number" id="wuf-local-temperature" min="0" max="2" step="0.1" />
+              </label>
+              <label class="wuf-field">
+                <span data-wuf-i18n="options.timeoutSecLabel">請求逾時秒數 (5–600)</span>
+                <input type="number" id="wuf-local-timeout" min="5" max="600" step="1" />
+              </label>
+            </div>
+            <div class="wuf-grid-2">
+              <label class="wuf-field">
+                <span data-wuf-i18n="options.thinkingLevelLabel">推論思考強度 (Thinking)</span>
+                <select id="wuf-local-thinking">
+                  <option value="auto">auto</option>
+                  <option value="off">off</option>
+                  <option value="low">low</option>
+                  <option value="medium">medium</option>
+                  <option value="high">high</option>
+                </select>
+              </label>
+              <label class="wuf-checkbox">
+                <input type="checkbox" id="wuf-local-strong-marker" />
+                <span data-wuf-i18n="options.strongSegMarkerLabel">使用強化分段標記</span>
+              </label>
+            </div>
+            <div class="wuf-grid-3">
+              <label class="wuf-field">
+                <span data-wuf-i18n="options.webConcurrencyLabel">網頁並行請求數</span>
+                <input type="number" id="wuf-local-concurrency" min="1" max="50" step="1" />
+              </label>
+              <label class="wuf-field">
+                <span data-wuf-i18n="options.webBatchUnitsLabel">每批段落數上限</span>
+                <input type="number" id="wuf-local-batch-units" min="1" max="100" step="1" />
+              </label>
+              <label class="wuf-field">
+                <span data-wuf-i18n="options.webBatchCharsLabel">每批字元數上限</span>
+                <input type="number" id="wuf-local-batch-chars" min="500" max="20000" step="100" />
+              </label>
+            </div>
+            <label class="wuf-field">
+              <span data-wuf-i18n="options.systemPromptLabel">自訂系統提示詞 (System Prompt)</span>
+              <textarea id="wuf-local-system-prompt" rows="3"></textarea>
+            </label>
+            <label class="wuf-field">
+              <span data-wuf-i18n="options.extraBodyJsonLabel">額外請求 JSON (Extra Body)</span>
+              <textarea id="wuf-local-extra-body" rows="3"></textarea>
+            </label>
+          </div>
+        </section>
+      </div>
+
+      <!-- Tab 5: Online Custom Model -->
+      <div
+        role="tabpanel"
+        id="wuf-tab-panel-online"
+        class="wuf-tab-panel"
+        aria-labelledby="wuf-tab-btn-online"
+        data-wuf-panel="online"
+        hidden
+      >
+        <section class="wuf-section" id="wuf-online-profile-card">
+          <h2 data-wuf-i18n="options.onlineProfileSection">線上自訂模型設定（獨立設定檔）</h2>
+          <div class="wuf-form-stack">
+            <label class="wuf-field">
+              <span data-wuf-i18n="options.baseUrlLabel">API Base URL</span>
+              <input type="url" id="wuf-online-base-url" placeholder="https://openrouter.ai/api/v1" />
+            </label>
+            <label class="wuf-field">
+              <span data-wuf-i18n="options.apiKeyLabel">API 金鑰</span>
+              <input type="password" id="wuf-online-api-key" autocomplete="off" />
+              <small class="wuf-hint" data-wuf-i18n="options.apiKeyLocalOnlyHint"></small>
+            </label>
+            <div class="wuf-field">
+              <span data-wuf-i18n="options.modelLabel">模型名稱 (Model ID)</span>
+              <input type="text" id="wuf-online-model" placeholder="openai/gpt-4o-mini" />
+              <div class="wuf-inline-buttons" style="margin-top: 8px;">
+                <button
+                  type="button"
+                  id="wuf-online-model-test"
+                  class="wuf-btn wuf-btn-primary"
+                  data-wuf-i18n="options.testModelButton"
+                >
+                  測試模型運作
+                </button>
+              </div>
+              <div id="wuf-online-test-result" class="wuf-test-result" hidden style="margin-top: 6px;"></div>
+            </div>
+            <div class="wuf-grid-2">
+              <label class="wuf-field">
+                <span data-wuf-i18n="options.temperatureLabel">Temperature (0–2)</span>
+                <input type="number" id="wuf-online-temperature" min="0" max="2" step="0.1" />
+              </label>
+              <label class="wuf-field">
+                <span data-wuf-i18n="options.timeoutSecLabel">請求逾時秒數 (5–600)</span>
+                <input type="number" id="wuf-online-timeout" min="5" max="600" step="1" />
+              </label>
+            </div>
+            <div class="wuf-grid-2">
+              <label class="wuf-field">
+                <span data-wuf-i18n="options.thinkingLevelLabel">推論思考強度 (Thinking)</span>
+                <select id="wuf-online-thinking">
+                  <option value="auto">auto</option>
+                  <option value="off">off</option>
+                  <option value="low">low</option>
+                  <option value="medium">medium</option>
+                  <option value="high">high</option>
+                </select>
+              </label>
+              <label class="wuf-field">
+                <span data-wuf-i18n="options.routingSortLabel">OpenRouter 路由排序</span>
+                <select id="wuf-online-routing-sort">
+                  <option value="throughput">throughput</option>
+                  <option value="latency">latency</option>
+                  <option value="price">price</option>
+                  <option value="auto">auto</option>
+                </select>
+              </label>
+            </div>
+            <div class="wuf-grid-2">
+              <label class="wuf-checkbox">
+                <input type="checkbox" id="wuf-online-allow-fallbacks" />
+                <span data-wuf-i18n="options.allowFallbacksLabel">允許供應商備援路由</span>
+              </label>
+              <label class="wuf-checkbox">
+                <input type="checkbox" id="wuf-online-strong-marker" />
+                <span data-wuf-i18n="options.strongSegMarkerLabel">使用強化分段標記</span>
+              </label>
+            </div>
+            <div class="wuf-grid-3">
+              <label class="wuf-field">
+                <span data-wuf-i18n="options.webConcurrencyLabel">網頁並行請求數</span>
+                <input type="number" id="wuf-online-concurrency" min="1" max="50" step="1" />
+              </label>
+              <label class="wuf-field">
+                <span data-wuf-i18n="options.webBatchUnitsLabel">每批段落數上限</span>
+                <input type="number" id="wuf-online-batch-units" min="1" max="100" step="1" />
+              </label>
+              <label class="wuf-field">
+                <span data-wuf-i18n="options.webBatchCharsLabel">每批字元數上限</span>
+                <input type="number" id="wuf-online-batch-chars" min="500" max="20000" step="100" />
+              </label>
+            </div>
+            <label class="wuf-field">
+              <span data-wuf-i18n="options.systemPromptLabel">自訂系統提示詞 (System Prompt)</span>
+              <textarea id="wuf-online-system-prompt" rows="3"></textarea>
+            </label>
+            <label class="wuf-field">
+              <span data-wuf-i18n="options.extraBodyJsonLabel">額外請求 JSON (Extra Body)</span>
+              <textarea id="wuf-online-extra-body" rows="3" placeholder='{"top_p": 0.9}'></textarea>
+            </label>
+          </div>
+        </section>
+      </div>
+
+      <!-- Tab 6: Backup & Reset -->
+      <div
+        role="tabpanel"
+        id="wuf-tab-panel-data"
+        class="wuf-tab-panel"
+        aria-labelledby="wuf-tab-btn-data"
+        data-wuf-panel="data"
+        hidden
+      >
+        <section class="wuf-section">
+          <h2 data-wuf-i18n="options.dataManagementSection">設定備份與清除</h2>
+          <div class="wuf-inline-buttons">
+            <button type="button" id="wuf-export-btn" class="wuf-btn wuf-btn-secondary" data-wuf-i18n="common.export">
+              匯出設定 JSON
+            </button>
+            <button type="button" id="wuf-import-btn" class="wuf-btn wuf-btn-secondary" data-wuf-i18n="common.import">
+              匯入設定 JSON
+            </button>
+            <button type="button" id="wuf-reset-btn" class="wuf-btn wuf-btn-danger" data-wuf-i18n="common.resetAll">
+              清除並重設所有設定
+            </button>
+          </div>
+          <textarea
+            id="wuf-json-transfer-box"
+            class="wuf-json-box"
+            rows="8"
+            placeholder='{"schemaVersion": 1, ...}'
+          ></textarea>
+          <p id="wuf-data-feedback" class="wuf-hint"></p>
+        </section>
+      </div>
+    </main>
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

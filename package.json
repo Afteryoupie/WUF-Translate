@@ -1,0 +1,22 @@
+{
+  "name": "wuf-translate",
+  "version": "0.1.0",
+  "private": true,
+  "description": "WUF Translate clean-room TypeScript browser extension",
+  "license": "SEE LICENSE IN LICENSE",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "node scripts/build-wuf.mjs",
+    "test": "npm run build && node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "opencc-js": "^1.0.5"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.313",
+    "@types/node": "^22.13.10",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.8.2"
+  }
+}
