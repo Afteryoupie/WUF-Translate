@@ -46,7 +46,6 @@ export interface CustomProviderProfile {
   temperature: number | null;
   fetchTimeoutSec: number;
   thinkingLevel: ThinkingLevel;
-  useStrongSegMarker: boolean;
   routingSort: RoutingSort;
   allowFallbacks: boolean;
   extraBodyJson: string;
@@ -169,6 +168,7 @@ export interface TranslationRequest {
   modelOverride?: string;
   applyOpenCC?: boolean;
   openccVariant?: OpenCCVariant;
+  subtitleContext?: import('./subtitle/translation-context.ts').SubtitleTranslationContext;
 }
 
 export interface OpenCCConversionRequest {
@@ -182,6 +182,9 @@ export interface TranslationResponse {
   effectiveModel: string;
   profileType?: ProviderProfileType;
   openccApplied?: OpenCCVariant;
+  decisionReport?: import('./subtitle/subtitle-decisions.ts').SubtitleDecisionReport;
+  intentionalEmpty?: number[];
+  contextDecision?: import('./subtitle/translation-context.ts').SubtitleTopicDecision;
 }
 
 export type RuntimeRequestMessage =

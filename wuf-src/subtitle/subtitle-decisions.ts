@@ -160,7 +160,9 @@ export async function runSubtitleDecisionPipeline(
     }
   }
   const resolved = buildDecisionEngineFromSettings(settings, options.apiKey);
-  if (!resolved.enabled || !Array.isArray(payload?.texts) || !payload.texts.length) {
+  // Deterministic cleanup and format repairs remain useful with the model off.
+  // Keep them in both arms so model comparisons measure Laya's contribution.
+  if (!Array.isArray(payload?.texts) || !payload.texts.length) {
     return translate(payload);
   }
   const engine = options.engine || resolved.engine;

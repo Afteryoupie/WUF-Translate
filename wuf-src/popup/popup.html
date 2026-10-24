@@ -76,7 +76,7 @@
       <section class="wuf-settings-card">
         <!-- Display Mode Toggle -->
         <div class="wuf-row">
-          <span class="wuf-row-label" id="wuf-display-mode-label" data-wuf-i18n="options.displayModeLabel">顯示模式</span>
+          <span class="wuf-row-label" id="wuf-display-mode-label" data-wuf-i18n="popup.webpageDisplayMode">網頁顯示模式</span>
           <div class="wuf-seg-group" role="radiogroup" aria-labelledby="wuf-display-mode-label">
             <button
               type="button"
@@ -127,6 +127,14 @@
           </label>
         </div>
 
+        <div class="wuf-row">
+          <span class="wuf-row-label" id="wuf-cross-tab-label" data-wuf-i18n="popup.crossTabSticky" data-wuf-i18n-title="options.crossTabStickyLabel">跨分頁延續翻譯</span>
+          <label class="wuf-switch">
+            <input type="checkbox" id="wuf-cross-tab-toggle" aria-labelledby="wuf-cross-tab-label" />
+            <span class="wuf-slider"></span>
+          </label>
+        </div>
+
         <!-- OpenCC Simplified/Traditional Conversion Switch -->
         <div class="wuf-row" id="wuf-opencc-row">
           <span class="wuf-row-label" id="wuf-opencc-label" data-wuf-i18n="popup.openccAuto">簡繁自動互轉（免費）</span>
@@ -141,7 +149,7 @@
       <section class="wuf-settings-card wuf-context-card" id="wuf-yt-box" hidden>
         <div class="wuf-row">
           <div class="wuf-yt-label-group">
-            <span class="wuf-row-label" id="wuf-yt-label" data-wuf-i18n="popup.ytSubtitlesToggle">YouTube 雙語字幕</span>
+            <span class="wuf-row-label" id="wuf-yt-label" data-wuf-i18n="popup.ytSubtitlesToggle">YouTube 字幕</span>
             <button
               type="button"
               id="wuf-btn-translate-youtube"
@@ -156,19 +164,37 @@
             <span class="wuf-slider"></span>
           </label>
         </div>
-        <div class="wuf-row">
-          <label for="wuf-yt-caption-size" class="wuf-row-label" data-wuf-i18n="popup.ytCaptionSize">字幕大小</label>
-          <select id="wuf-yt-caption-size" class="wuf-select-sm">
-            <option value="100">100%</option>
+        <div class="wuf-row wuf-caption-size-row">
+          <label id="wuf-yt-caption-size-label" for="wuf-yt-caption-size" class="wuf-row-label" data-wuf-i18n="popup.ytCaptionSize">字幕大小</label>
+          <div class="wuf-caption-size-controls">
+            <input type="range" id="wuf-yt-caption-size-range" min="50" max="150" step="10" value="100" list="wuf-yt-caption-size-ticks" aria-labelledby="wuf-yt-caption-size-label" aria-valuetext="100%" />
+            <datalist id="wuf-yt-caption-size-ticks">
+              <option value="50"></option>
+              <option value="60"></option>
+              <option value="70"></option>
+              <option value="80"></option>
+              <option value="90"></option>
+              <option value="100"></option>
+              <option value="110"></option>
+              <option value="120"></option>
+              <option value="130"></option>
+              <option value="140"></option>
+              <option value="150"></option>
+            </datalist>
+            <select id="wuf-yt-caption-size" class="wuf-select-sm" aria-labelledby="wuf-yt-caption-size-label">
+            <option value="50">50%</option>
+            <option value="60">60%</option>
+            <option value="70">70%</option>
+            <option value="80">80%</option>
+            <option value="90">90%</option>
+            <option value="100" selected>100%</option>
             <option value="110">110%</option>
             <option value="120">120%</option>
             <option value="130">130%</option>
             <option value="140">140%</option>
             <option value="150">150%</option>
-            <option value="160">160%</option>
-            <option value="180">180%</option>
-            <option value="200">200%</option>
-          </select>
+            </select>
+          </div>
         </div>
       </section>
 

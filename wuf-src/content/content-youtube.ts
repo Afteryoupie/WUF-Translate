@@ -1,5 +1,6 @@
 import type { SettingsSnapshotPayload, TranslationResponse } from '../types.ts';
 import { sendWufRuntimeMessage } from '../lib/runtime-client.ts';
+import { buildSubtitleTranslationContext } from '../subtitle/translation-context.ts';
 import {
   chooseBestCaptionTrack,
   heuristicMergeAsr,
@@ -240,14 +241,6 @@ if (
 }
 
 export function initYouTubeContentScript(): WufYouTubeNamespace {
-  const normalizeCaptionKey = (text: string): string => {
-    return (text || '')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .toLowerCase();
-  };
-
-
   const state = {
     active: false,
     rawSegments: [] as AsrRawSegment[],
@@ -255,6 +248,8 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
     translatedWindows: new Set<number>(),
     translatingWindows: new Set<number>(),
     sessionGen: 0,
+    sourceLanguage: 'auto',
+    isAsr: false,
   };
 
   const warmupSubtitleModel = async () => {
@@ -310,7 +305,6 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
   };
 
   // Cache sentence translations; each occurrence keeps its own display timeline.
-  const subtitleTranslationCache = new Map<string, string>();
 
   const STATUS_BADGE_ID = '__wuf_yt_caption_status';
   let captionStatusTimer: ReturnType<typeof setInterval> | null = null;
@@ -451,7 +445,6 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
   const appendSentenceCues = (sentence: MergedAsrSentence, translation: string) => {
     const text = translation.replace(/\r?\n/g, ' ').trim();
     if (!text) return;
-    subtitleTranslationCache.set(normalizeCaptionKey(sentence.text), text);
     if (state.displayCues.some(c => c.startMs === sentence.startMs && c.sourceText === sentence.text)) return;
     const pieces = splitLongSubtitleCue(sentence.startMs, sentence.endMs, text, sentence.sourceSegs.map(s => s.startMs));
     state.displayCues.push(...pieces.map(piece => ({ ...piece, sourceText: sentence.text })));
@@ -496,34 +489,43 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
     state.translatingWindows.add(windowIndex);
 
     try {
-      const merged = heuristicMergeAsr(windowSegs, 'auto');
+      const refined = state.isAsr && sub.decisionMode === 'custom' ? await refineAsrBoundaries(windowSegs, sub, async segments => {
+        const response = await sendWufRuntimeMessage<{ breakBefore: Array<boolean | null> }>({
+          type: 'wuf:evaluate-subtitle-boundaries', segments,
+        });
+        return response.ok ? { ok: true, ...response.data } : { ok: false };
+      }) : windowSegs;
+      if (!state.active || gen !== state.sessionGen) return false;
+      const merged = heuristicMergeAsr(refined, state.sourceLanguage);
       if (merged.length === 0) {
         state.translatedWindows.add(windowIndex);
         return true;
       }
 
       const isLocal = sub?.engine === 'openai-compat-local';
+      const title = globalThis.document?.querySelector('ytd-watch-metadata h1')?.textContent?.trim() ||
+        globalThis.document?.title?.replace(/ - YouTube$/, '') || '';
+      const videoId = new URL(globalThis.location?.href || 'https://www.youtube.com').searchParams.get('v') || '';
+      const subtitleContext = buildSubtitleTranslationContext(state.rawSegments, title, videoId);
 
       if (isLocal) {
         // Local translation models receive complete sentence groups sequentially.
         for (const sentence of merged) {
           if (!state.active || gen !== state.sessionGen) return false;
-          const cached = subtitleTranslationCache.get(normalizeCaptionKey(sentence.text));
-          if (cached !== undefined) {
-            // Repeated dialogue still needs cues at its own timestamps.
-            appendSentenceCues(sentence, cached);
-            continue;
-          }
           const response = await sendWufRuntimeMessage<TranslationResponse>({
             type: 'wuf:translate-text',
             request: {
               texts: [sentence.text], targetLanguage: sub.targetLanguage,
+              sourceLanguage: state.sourceLanguage,
+              subtitleContext,
               engine: sub.engine, purpose: 'subtitle',
               modelOverride: sub.customModelOverride || undefined,
             },
           });
           if (!state.active || gen !== state.sessionGen) return false;
-          if (!response.ok || !response.data.translations[0]) return false;
+          if (!response.ok) return false;
+          if (response.data.intentionalEmpty?.includes(0)) continue;
+          if (!response.data.translations[0]) return false;
           appendSentenceCues(sentence, response.data.translations[0]);
         }
       } else {
@@ -531,6 +533,8 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
           type: 'wuf:translate-text',
           request: {
             texts: merged.map(sentence => sentence.text), targetLanguage: sub.targetLanguage,
+            sourceLanguage: state.sourceLanguage,
+            subtitleContext,
             engine: sub.engine, purpose: 'subtitle',
             modelOverride: sub.customModelOverride || undefined,
           },
@@ -674,16 +678,23 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
   if (typeof globalThis.window !== 'undefined') {
     (globalThis.window as unknown as { __WUF?: WufYouTubeNamespace }).__WUF = wufNs;
     globalThis.window.addEventListener('wuf-timedtext-captured', (ev: Event) => {
-      const detail = (ev as CustomEvent<{ data?: unknown; rawText?: string }>).detail;
+      const detail = (ev as CustomEvent<{ data?: unknown; rawText?: string; url?: string }>).detail;
       const raw = detail?.rawText || detail?.data;
       if (raw) {
         const segments = parseCaptionResponse(raw);
         if (segments.length > 0) {
+          try {
+            const params = new URL(detail.url || '', 'https://www.youtube.com').searchParams;
+            state.sourceLanguage = params.get('tlang') || params.get('lang') || 'auto';
+            state.isAsr = params.get('kind') === 'asr';
+          } catch {
+            state.sourceLanguage = 'auto';
+            state.isAsr = false;
+          }
           state.rawSegments = segments;
           state.translatedWindows.clear();
           state.translatingWindows.clear();
           state.displayCues = [];
-          subtitleTranslationCache.clear();
           state.sessionGen++;
           const video = document.querySelector<HTMLVideoElement>('video');
           updateActiveCues(video?.currentTime ?? 0);

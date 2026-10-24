@@ -178,7 +178,6 @@ export async function initOptionsPage(): Promise<void> {
   const onlineThinking = getSelect('wuf-online-thinking');
   const onlineRoutingSort = getSelect('wuf-online-routing-sort');
   const onlineAllowFallbacks = getInput('wuf-online-allow-fallbacks');
-  const onlineStrongMarker = getInput('wuf-online-strong-marker');
   const onlineConcurrency = getInput('wuf-online-concurrency');
   const onlineBatchUnits = getInput('wuf-online-batch-units');
   const onlineBatchChars = getInput('wuf-online-batch-chars');
@@ -197,7 +196,6 @@ export async function initOptionsPage(): Promise<void> {
   const localTemp = getInput('wuf-local-temperature');
   const localTimeout = getInput('wuf-local-timeout');
   const localThinking = getSelect('wuf-local-thinking');
-  const localStrongMarker = getInput('wuf-local-strong-marker');
   const localConcurrency = getInput('wuf-local-concurrency');
   const localBatchUnits = getInput('wuf-local-batch-units');
   const localBatchChars = getInput('wuf-local-batch-chars');
@@ -332,7 +330,6 @@ export async function initOptionsPage(): Promise<void> {
       onlineThinking.value = online.thinkingLevel;
       onlineRoutingSort.value = online.routingSort;
       onlineAllowFallbacks.checked = online.allowFallbacks;
-      onlineStrongMarker.checked = online.useStrongSegMarker;
       onlineConcurrency.value = String(online.webConcurrency);
       onlineBatchUnits.value = String(online.webBatchUnits);
       onlineBatchChars.value = String(online.webBatchChars);
@@ -346,7 +343,6 @@ export async function initOptionsPage(): Promise<void> {
       localTemp.value = local.temperature === null ? '' : String(local.temperature);
       localTimeout.value = String(local.fetchTimeoutSec);
       localThinking.value = local.thinkingLevel;
-      localStrongMarker.checked = local.useStrongSegMarker;
       localConcurrency.value = String(local.webConcurrency);
       localBatchUnits.value = String(local.webBatchUnits);
       localBatchChars.value = String(local.webBatchChars);
@@ -427,7 +423,6 @@ export async function initOptionsPage(): Promise<void> {
           thinkingLevel: onlineThinking.value as ThinkingLevel,
           routingSort: onlineRoutingSort.value as RoutingSort,
           allowFallbacks: onlineAllowFallbacks.checked,
-          useStrongSegMarker: onlineStrongMarker.checked,
           webConcurrency: parseIntOrFallback(
             onlineConcurrency.value,
             prev.providers.online.webConcurrency,
@@ -453,7 +448,6 @@ export async function initOptionsPage(): Promise<void> {
             prev.providers.local.fetchTimeoutSec,
           ),
           thinkingLevel: localThinking.value as ThinkingLevel,
-          useStrongSegMarker: localStrongMarker.checked,
           webConcurrency: parseIntOrFallback(
             localConcurrency.value,
             prev.providers.local.webConcurrency,

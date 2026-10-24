@@ -1,11 +1,14 @@
 import type { SubtitleDecisionMode } from '../types.ts';
 import { resolveChatCompletionsUrl } from '../providers/openai-compat.ts';
+import { SUBTITLE_TOPICS, type SubtitleTopicId } from './translation-context.ts';
 
 export const LAYA_API_URL = 'http://127.0.0.1:8080/v1/systemone';
 
 export interface LayaAnswer {
   type?: string;
   noul?: number;
+  choice?: string;
+  probabilities?: Record<string, number>;
   action?: {
     act_probability?: number;
   };
@@ -97,7 +100,7 @@ export class LayaDecisionEngine {
 
   async _request(
     state: Record<string, unknown>,
-    questions: Record<string, { type: string; instructions: string }>,
+    questions: Record<string, { type: string; instructions: string; criteria?: Record<string, string> }>,
   ): Promise<Record<string, LayaAnswer> | null> {
     if (this.mode === 'custom' && (this.customModel || this.customBaseUrl)) {
       return this._requestCustomModel(state, questions);
@@ -123,7 +126,8 @@ export class LayaDecisionEngine {
           signal: controller.signal,
         });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const data = (await response.json()) as { answers?: unknown };
+        const data = (await response.json()) as { answers?: unknown; usage?: { truncated?: boolean } };
+        if (data.usage?.truncated) throw new Error('decision context truncated');
         if (
           !data?.answers ||
           typeof data.answers !== 'object' ||
@@ -238,6 +242,47 @@ export class LayaDecisionEngine {
     return this.mode === 'custom' && (this.customModel || this.customBaseUrl)
       ? 'custom'
       : 'laya';
+  }
+
+  async classifyTopic(title: string, sample: string): Promise<{
+    topic: SubtitleTopicId | null; confidence: number | null; reason: string;
+  }> {
+    this.lastError = null;
+    const abstain = (reason: string) => ({ topic: null, confidence: null, reason });
+    if (!this.enabled || this.mode !== 'laya') return abstain('disabled');
+    if (!sample.trim()) return abstain('no subtitle evidence');
+    const picks: Array<{ topic: SubtitleTopicId; probability: number }> = [];
+    // Check label-order stability; shipped probabilities are not calibrated.
+    for (const shift of [0, 3]) {
+      const ordered = [...SUBTITLE_TOPICS.slice(shift), ...SUBTITLE_TOPICS.slice(0, shift)];
+      const keys = ordered.map((_, i) => String.fromCharCode(65 + i));
+      const answers = await this._request(
+        { title: title.slice(0, 200), subtitles: sample.slice(0, 1500) },
+        { topic: { type: 'choice', instructions:
+          'Choose the main subject of this video from its title and subtitles. Prefer concrete subtitle evidence. Use Other if the subject is unclear.',
+          criteria: Object.fromEntries(ordered.map((topic, i) => [keys[i], topic.description])),
+        } },
+      );
+      if (!answers) return abstain(this.lastError || 'request failed');
+      const answer = answers.topic;
+      const values = keys.map(key => answer?.probabilities?.[key]);
+      if (answer?.type !== 'choice' || values.some(p => typeof p !== 'number' || !Number.isFinite(p) || p < 0 || p > 1)) {
+        return abstain('invalid probabilities');
+      }
+      if (Math.abs(values.reduce<number>((sum, p) => sum + p!, 0) - 1) > 0.02) {
+        return abstain('invalid probability total');
+      }
+      const ranked = keys.map((key, i) => ({ topic: ordered[i].id, key, probability: values[i]! }))
+        .sort((a, b) => b.probability - a.probability);
+      const first = ranked[0];
+      if (answer.choice !== first.key || first.topic === 'other' ||
+          first.probability < 0.65 || first.probability - ranked[1].probability < 0.25) {
+        return abstain('uncertain');
+      }
+      picks.push(first);
+    }
+    if (picks[0].topic !== picks[1].topic) return abstain('option order disagreement');
+    return { topic: picks[0].topic, confidence: Math.min(...picks.map(p => p.probability)), reason: 'stable choice; uncalibrated' };
   }
 
   async evaluateBatch(

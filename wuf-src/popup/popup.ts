@@ -38,6 +38,7 @@ export async function initPopup(): Promise<void> {
   const targetLangSelect = document.getElementById('wuf-target-lang-select') as HTMLSelectElement | null;
   const autoSiteToggle = document.getElementById('wuf-auto-site-toggle') as HTMLInputElement | null;
   const autoSiteLabel = document.getElementById('wuf-auto-site-label');
+  const crossTabToggle = document.getElementById('wuf-cross-tab-toggle') as HTMLInputElement | null;
   const openccRow = document.getElementById('wuf-opencc-row');
   const openccToggle = document.getElementById('wuf-opencc-toggle') as HTMLInputElement | null;
 
@@ -45,6 +46,16 @@ export async function initPopup(): Promise<void> {
   const ytSubtitlesToggle = document.getElementById('wuf-yt-subtitles-toggle') as HTMLInputElement | null;
   const translateYoutubeBtn = document.getElementById('wuf-btn-translate-youtube') as HTMLButtonElement | null;
   const ytCaptionSize = document.getElementById('wuf-yt-caption-size') as HTMLSelectElement | null;
+  const ytCaptionSizeRange = document.getElementById('wuf-yt-caption-size-range') as HTMLInputElement | null;
+  let captionSizePending = false;
+  const renderCaptionSize = (scale: number) => {
+    const value = String(Math.max(50, Math.min(150, Math.round(scale / 10) * 10)));
+    if (ytCaptionSize) ytCaptionSize.value = value;
+    if (ytCaptionSizeRange) {
+      ytCaptionSizeRange.value = value;
+      ytCaptionSizeRange.setAttribute('aria-valuetext', `${value}%`);
+    }
+  };
 
   const statusDot = document.getElementById('wuf-status-dot');
   const statusText = document.getElementById('wuf-status-text');
@@ -140,6 +151,8 @@ export async function initPopup(): Promise<void> {
     if (targetLangSelect) {
       targetLangSelect.value = saved.webpage.targetLanguage;
     }
+
+    if (crossTabToggle) crossTabToggle.checked = saved.webpage.crossTabSticky === true;
 
     // OpenCC row visibility
     const isZh = ['zh-TW', 'zh-CN'].includes(saved.webpage.targetLanguage);
@@ -259,7 +272,9 @@ export async function initPopup(): Promise<void> {
         });
         if (ytResp?.ok) {
           if (ytSubtitlesToggle) ytSubtitlesToggle.checked = Boolean(ytResp.active);
-          if (ytCaptionSize) ytCaptionSize.value = String(ytResp.captionScale || 100);
+          if (!captionSizePending && document.activeElement !== ytCaptionSizeRange && document.activeElement !== ytCaptionSize) {
+            renderCaptionSize(ytResp.captionScale || 100);
+          }
           if (ytResp.active && progressIcon && progressText) {
             progressIcon.textContent = '▶';
             const segCount = ytResp.rawSegmentsCount || 0;
@@ -552,6 +567,13 @@ export async function initPopup(): Promise<void> {
     });
   });
 
+  crossTabToggle?.addEventListener('change', async () => {
+    if (!currentSnapshot) return;
+    await saveSettings({
+      webpage: { ...currentSnapshot.savedSettings.webpage, crossTabSticky: crossTabToggle.checked },
+    });
+  });
+
   // OpenCC toggle
   openccToggle?.addEventListener('change', async () => {
     await saveSettings({ openccEnabled: openccToggle.checked });
@@ -598,15 +620,26 @@ export async function initPopup(): Promise<void> {
   });
 
   // Caption Size
-  ytCaptionSize?.addEventListener('change', async () => {
-    const tab = await getActiveTab();
-    if (!tab?.id) return;
-    const scale = Number.parseInt(ytCaptionSize.value, 10);
-    await globalThis.chrome?.tabs?.sendMessage(tab.id, {
-      type: 'wuf:set-youtube-caption-scale',
-      payload: { scale },
+  for (const control of [ytCaptionSizeRange, ytCaptionSize]) {
+    control?.addEventListener('input', () => renderCaptionSize(Number(control.value)));
+    control?.addEventListener('change', async () => {
+      const scale = Number(control.value);
+      renderCaptionSize(scale);
+      captionSizePending = true;
+      try {
+        const tab = await getActiveTab();
+        if (!tab?.id) return;
+        await globalThis.chrome?.tabs?.sendMessage(tab.id, {
+          type: 'wuf:set-youtube-caption-scale',
+          payload: { scale },
+        });
+      } catch {
+        // The tab may have navigated; the next state refresh restores its value.
+      } finally {
+        captionSizePending = false;
+      }
     });
-  });
+  }
 
   // Engine Select
   engineSelect?.addEventListener('change', async () => {

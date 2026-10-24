@@ -27,7 +27,6 @@ export const DEFAULT_ONLINE_PROFILE: Readonly<CustomProviderProfile> = Object.fr
   temperature: 0.3,
   fetchTimeoutSec: 60,
   thinkingLevel: 'off',
-  useStrongSegMarker: false,
   routingSort: 'throughput',
   allowFallbacks: true,
   extraBodyJson: '',
@@ -43,7 +42,6 @@ export const DEFAULT_LOCAL_PROFILE: Readonly<CustomProviderProfile> = Object.fre
   temperature: 0.2,
   fetchTimeoutSec: 120,
   thinkingLevel: 'off',
-  useStrongSegMarker: false,
   routingSort: 'auto',
   allowFallbacks: false,
   extraBodyJson: '',
@@ -194,10 +192,6 @@ export function sanitizeProviderProfile(
 
   if (typeof obj.allowFallbacks === 'boolean') {
     result.allowFallbacks = obj.allowFallbacks;
-  }
-
-  if (typeof obj.useStrongSegMarker === 'boolean') {
-    result.useStrongSegMarker = obj.useStrongSegMarker;
   }
 
   for (const [field, [min, max]] of Object.entries(PERFORMANCE_FIELDS) as Array<

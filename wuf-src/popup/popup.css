@@ -295,6 +295,29 @@ body  {
 .wuf-yt-label-group  {
   min-width: 0;
 }
+.wuf-caption-size-row {
+  flex-wrap: wrap;
+  gap: 0;
+  padding-top: 8px;
+}
+.wuf-caption-size-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+#wuf-yt-caption-size-range {
+  flex: 1;
+  min-width: 0;
+  height: 44px;
+  margin: 0;
+  accent-color: var(--wuf-accent-text);
+  cursor: pointer;
+}
+#wuf-yt-caption-size {
+  flex: 0 0 80px;
+  min-height: 44px;
+}
 #wuf-btn-translate-youtube  {
   display: none;
 }

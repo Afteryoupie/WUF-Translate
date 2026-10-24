@@ -229,6 +229,17 @@
   font-size: 13px;
   overflow-wrap: anywhere;
 }
+.wuf-decision-help {
+  display: grid;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--wuf-text-muted);
+  overflow-wrap: anywhere;
+}
+.wuf-decision-help p {
+  margin: 0;
+}
 .wuf-local-model-controls  {
   display: flex;
   flex-direction: column;

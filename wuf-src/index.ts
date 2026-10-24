@@ -18,6 +18,7 @@ export * from './providers/index.ts';
 export * from './subtitle/local-subtitle.ts';
 export * from './subtitle/decision-engine.ts';
 export * from './subtitle/subtitle-decisions.ts';
+export * from './subtitle/translation-context.ts';
 export * from './subtitle/youtube-pipeline.ts';
 export * from './webpage/dom-translator.ts';
 export * from './i18n/index.ts';

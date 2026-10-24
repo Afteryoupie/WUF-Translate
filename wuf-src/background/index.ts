@@ -1,6 +1,7 @@
 import type {
   RuntimeRequestMessage,
   RuntimeResponseMessage,
+  TranslationResponse,
 } from '../types.ts';
 import {
   clearAllSettings,
@@ -24,6 +25,11 @@ import { WufProviderError } from '../providers/errors.ts';
 import { executeTranslation } from '../providers/index.ts';
 import { translateWithOpenCC } from '../providers/opencc.ts';
 import { LayaDecisionEngine } from '../subtitle/decision-engine.ts';
+import { runSubtitleDecisionPipeline } from '../subtitle/subtitle-decisions.ts';
+import { resolvePresetProvider } from '../lib/provider-profiles.ts';
+import { sanitizeSubtitleContext, subtitleContextPrompt, type SubtitleTopicDecision } from '../subtitle/translation-context.ts';
+
+const subtitleTopics = new Map<string, Promise<SubtitleTopicDecision>>();
 
 const stickyTabs = new Set<number>();
 let _stickyHydratingPromise: Promise<void> | null = null;
@@ -140,6 +146,80 @@ export async function handleRuntimeMessage(
         ]);
 
         const req = message.request;
+        if (req.purpose === 'subtitle') {
+          const context = sanitizeSubtitleContext(req.subtitleContext);
+          let contextDecision: SubtitleTopicDecision | undefined;
+          if (context && saved.subtitles.decisionMode === 'laya') {
+            const topicKey = JSON.stringify([saved.subtitles.layaEndpointUrl, context.videoId, context.title, context.sample]);
+            let decision = subtitleTopics.get(topicKey);
+            if (!decision) {
+              const engine = new LayaDecisionEngine({ mode: 'laya', apiUrl: saved.subtitles.layaEndpointUrl });
+              decision = engine.classifyTopic(context.title || '', context.sample || '').then(result => {
+                if (engine.lastError) subtitleTopics.delete(topicKey);
+                return result;
+              });
+              if (subtitleTopics.size >= 32) subtitleTopics.delete(subtitleTopics.keys().next().value!);
+              subtitleTopics.set(topicKey, decision);
+            }
+            contextDecision = await decision;
+            if (contextDecision.topic) context.topic = contextDecision.topic;
+          }
+          const provider = resolvePresetProvider(saved, secrets, 'subtitle', req.engine, req.modelOverride);
+          const key = {
+            sourceLang: req.sourceLanguage || 'auto', targetLang: req.targetLanguage,
+            engine: req.engine,
+            // A changed endpoint, model or prompt must not reuse old subtitles.
+            model: JSON.stringify([provider.baseUrl, provider.effectiveModel,
+              subtitleContextPrompt(provider.systemPrompt, context, req.texts, req.targetLanguage),
+              req.applyOpenCC ?? saved.openccEnabled, req.openccVariant ?? saved.openccVariant]),
+          };
+          let metadata: TranslationResponse = {
+            translations: [], engine: req.engine, effectiveModel: '',
+          };
+          const checked = await runSubtitleDecisionPipeline(
+            { texts: req.texts, sourceLanguage: req.sourceLanguage },
+            { ...saved, subtitles: { ...saved.subtitles, targetLanguage: req.targetLanguage,
+              // Laya selects context once per video; per-line checks stay local.
+              decisionMode: saved.subtitles.decisionMode === 'laya' ? 'off' : saved.subtitles.decisionMode,
+            } },
+            async payload => {
+              if (!payload.skipCache && payload.texts.length === 1) {
+                const cached = await globalCacheManager.get({ ...key, text: payload.texts[0] });
+                if (cached !== null) return { ok: true, result: [cached] };
+              }
+              const response = await executeTranslation(
+                { ...req, texts: payload.texts }, saved, secrets,
+                { subtitleRepair: payload.decisionRepair, subtitleContext: context },
+              );
+              metadata = response;
+              return { ok: true, result: response.translations,
+                commitSubtitleCache: async translations => {
+                  await globalCacheManager.setBatch(translations.flatMap((translatedText, i) =>
+                    translatedText?.trim() ? [{ ...key, text: payload.texts[i], translatedText }] : [],
+                  ));
+                },
+              };
+            },
+            {
+              apiKey: saved.subtitles.decisionMode === 'custom'
+                ? secrets.providerApiKeys[saved.subtitles.decisionCustomBaseUrl === saved.providers.online.baseUrl ? 'online' : 'local']
+                : undefined,
+              log: report => console.debug('Subtitle decision pipeline', report),
+            },
+          );
+          if (!checked.ok || !checked.result || checked.result.some(text => text === null)) {
+            throw new WufProviderError(checked.error || 'Subtitle format repair failed', {
+              code: 'INVALID_RESPONSE', provider: req.engine,
+            });
+          }
+          return { ok: true, data: {
+            ...metadata,
+            translations: checked.result as string[],
+            decisionReport: checked.decisionReport,
+            intentionalEmpty: checked.intentionalEmpty,
+            contextDecision,
+          } };
+        }
         // Fast-path single text cache lookup
         if (req.texts.length === 1 && req.texts[0].trim()) {
           const cached = await globalCacheManager.get({

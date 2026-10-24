@@ -18,7 +18,6 @@ import {
 } from './errors.ts';
 
 export const SEGMENT_DELIMITER = '\n---WUF-SEG---\n';
-export const STRONG_SEGMENT_DELIMITER = '\n<<<WUF_SEGMENT_BOUNDARY>>>\n';
 
 export interface ThinkingPayloadInput {
   baseUrl?: string;
@@ -97,7 +96,6 @@ export function resolveChatCompletionsUrl(baseUrl: string): string {
 export function buildSystemPrompt(
   targetLanguage: string,
   customPrompt: string,
-  useStrongMarker: boolean,
   segmentCount: number,
 ): string {
   if (customPrompt.trim()) {
@@ -105,7 +103,7 @@ export function buildSystemPrompt(
   }
   const markerInstruction =
     segmentCount > 1
-      ? ` Keep the exact segment delimiter ${useStrongMarker ? '<<<WUF_SEGMENT_BOUNDARY>>>' : '---WUF-SEG---'} between the ${segmentCount} segments.`
+      ? ` Keep the exact segment delimiter ---WUF-SEG--- between the ${segmentCount} segments.`
       : '';
   return `You are a precise translation engine. Translate the user text into ${targetLanguage}. Output only the translation without commentary.${markerInstruction}`;
 }
@@ -128,13 +126,10 @@ export function buildChatCompletionRequestBody(
       ? localModelForPlatform(normalizedModel, provider.baseUrl, platform)
       : normalizedModel;
 
-  const delimiter = provider.useStrongSegMarker
-    ? STRONG_SEGMENT_DELIMITER
-    : SEGMENT_DELIMITER;
+  const delimiter = SEGMENT_DELIMITER;
   const systemContent = buildSystemPrompt(
     targetLanguage,
     provider.systemPrompt,
-    provider.useStrongSegMarker,
     texts.length,
   );
   const userContent = texts.join(delimiter);
@@ -329,7 +324,7 @@ export async function translateWithOpenAICompat(
   let parts = content.split(splitMarker).map(s => s.trim());
   if (parts.length !== texts.length) {
     // Tolerant regex fallback for minor whitespace/marker variations by local LLMs
-    const flexiblePattern = /\s*(?:---+\s*WUF-SEG\s*---+|<<<+\s*WUF_SEGMENT_BOUNDARY\s*>>>+)\s*/gi;
+    const flexiblePattern = /\s*---+\s*WUF-SEG\s*---+\s*/gi;
     const regexParts = content.split(flexiblePattern).map(s => s.trim());
     if (regexParts.length === texts.length) {
       parts = regexParts;

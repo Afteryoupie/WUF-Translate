@@ -10,12 +10,16 @@ import { WufProviderError } from './errors.ts';
 import { translateWithGoogle } from './google-translate.ts';
 import { translateWithOpenAICompat } from './openai-compat.ts';
 import { translateWithOpenCC } from './opencc.ts';
+import { subtitleRepairPrompt, type DecisionRepairItem } from '../subtitle/subtitle-decisions.ts';
+import { subtitleContextPrompt, type SubtitleTranslationContext } from '../subtitle/translation-context.ts';
 
 export interface ExecuteTranslationOptions {
   signal?: AbortSignal;
   timeoutMs?: number;
   platform?: string;
   watchdogOptions?: WatchdogClientOptions;
+  subtitleRepair?: DecisionRepairItem[];
+  subtitleContext?: SubtitleTranslationContext;
 }
 
 export async function executeTranslation(
@@ -79,6 +83,12 @@ export async function executeTranslation(
       modelOverride,
       options?.platform,
     );
+    if (purpose === 'subtitle') {
+      provider.systemPrompt = subtitleRepairPrompt(
+        subtitleContextPrompt(provider.systemPrompt, options?.subtitleContext, texts, effectiveTargetLang),
+        { decisionRepair: options?.subtitleRepair },
+      );
+    }
 
     let rawTranslations: string[];
     let effectiveModel: string;

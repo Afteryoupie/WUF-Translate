@@ -317,12 +317,12 @@
         </section>
 
         <section class="wuf-section">
-          <h3 data-wuf-i18n="options.decisionSectionTitle">字幕斷句與過濾決策模型</h3>
+          <h3 data-wuf-i18n="options.decisionSectionTitle">字幕情境與決策模型</h3>
           <div class="wuf-form-stack">
             <div class="wuf-grid-2">
               <label class="wuf-field">
                 <span data-wuf-i18n="options.decisionModeLabel">決策模型來源</span>
-                <select id="wuf-subtitle-decision-mode">
+                <select id="wuf-subtitle-decision-mode" aria-describedby="wuf-decision-help">
                   <option value="laya" data-wuf-i18n="options.decisionMode.laya">
                     本機 Laya 決策模型 (/v1/systemone)
                   </option>
@@ -330,7 +330,7 @@
                     自訂決策模型 (Custom Decision Model)
                   </option>
                   <option value="off" data-wuf-i18n="options.decisionMode.off">
-                    不使用決策模型（僅用本地時間軸規則）
+                    不使用決策模型（保留本地字幕保護）
                   </option>
                 </select>
               </label>
@@ -342,6 +342,12 @@
                   placeholder="http://127.0.0.1:8080/v1/systemone"
                 />
               </label>
+            </div>
+            <div id="wuf-decision-help" class="wuf-decision-help">
+              <p data-wuf-i18n="options.decisionHelp.laya">Laya：從影片標題與開頭字幕判斷主題，為中文翻譯提供攝影、汽車、園藝的詞義提示。每片分類後快取，每句只加入用得到的少量詞義；判斷不明確時沿用原翻譯。</p>
+              <p data-wuf-i18n="options.decisionHelp.limits">Laya 使用文字情境，不分析影片畫面；詞義提示仍可能誤判，不能保證整句翻譯正確。</p>
+              <p data-wuf-i18n="options.decisionHelp.off">關閉：不加主題詞義提示，仍保留本地斷句、音效清理、格式檢查與一次錯誤重試。</p>
+              <p data-wuf-i18n="options.decisionHelp.custom">自訂：由指定模型判斷字幕斷句、過濾與輸出格式；額外模型請求可能增加等待時間。</p>
             </div>
             <div class="wuf-grid-2" id="wuf-custom-decision-group">
               <label class="wuf-field">
@@ -457,10 +463,6 @@
                       <option value="high">high</option>
                     </select>
                   </label>
-                  <label class="wuf-checkbox">
-                    <input type="checkbox" id="wuf-local-strong-marker" />
-                    <span data-wuf-i18n="options.strongSegMarkerLabel">使用強化分段標記</span>
-                  </label>
                 </div>
                 <div class="wuf-grid-3">
                   <label class="wuf-field">
@@ -568,10 +570,6 @@
                   <label class="wuf-checkbox">
                     <input type="checkbox" id="wuf-online-allow-fallbacks" />
                     <span data-wuf-i18n="options.allowFallbacksLabel">允許供應商備援路由</span>
-                  </label>
-                  <label class="wuf-checkbox">
-                    <input type="checkbox" id="wuf-online-strong-marker" />
-                    <span data-wuf-i18n="options.strongSegMarkerLabel">使用強化分段標記</span>
                   </label>
                 </div>
                 <div class="wuf-grid-3">

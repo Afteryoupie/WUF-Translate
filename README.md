@@ -1,33 +1,214 @@
 # WUF Translate
 
-TypeScript browser extension. This project contains only the WUF implementation;
-the Go service is maintained separately in `../WUF-Watchdog`.
+把外文網頁與 YouTube 字幕翻成繁體中文的 Chrome／Edge 擴充功能。可顯示原文與譯文，也能連接自己電腦上的 AI 或線上翻譯模型。
 
-## Development
+**第一次使用，先照下面的「安裝」與「第一次翻譯」操作。選 Google 翻譯即可開始，不需要懂 LLM、不需要下載 AI 模型，也不需要 API 金鑰。**
 
-Use Node.js 22.18+ (native TypeScript stripping) and npm:
+## 可以做什麼？
 
-```powershell
+- 翻譯網頁，切換雙語對照或僅顯示譯文。
+- 翻譯 YouTube 已有的字幕，顯示雙語字幕並調整字幕大小。
+- 使用 Google 翻譯，或改用本機／線上的 AI 翻譯服務。
+- 透過 OpenCC 轉換簡繁體與台灣常用詞。
+- 選用 Laya，為部分 YouTube 字幕提供符合影片主題的詞義提示。
+
+YouTube 翻譯需要影片本身有人工字幕或自動字幕；本擴充功能不會直接聽影片聲音產生逐字稿。
+
+## 安裝
+
+目前使用「載入未封裝擴充功能」的方式安裝，需要先在自己的電腦建立瀏覽器能讀取的檔案。以下指令適用於 macOS 終端機與 Windows PowerShell。
+
+### 1. 準備工具與下載專案
+
+1. 安裝 Node.js **22.18 以上版本**，安裝時保留 npm。Node.js 是用來把本專案轉成瀏覽器擴充功能的工具，不是翻譯模型。
+2. 在本 GitHub 頁面按 **Code → Download ZIP**，下載後解壓縮到固定位置，例如「文件」中的 `WUF-Translate` 資料夾。
+3. 開啟終端機：macOS 使用「終端機」；Windows 使用 PowerShell 或 Windows Terminal。
+4. 輸入 `cd `（後面有一個空格），再把解壓縮後、**內含 `package.json` 的資料夾**拖進終端機，按 Enter，切換到該資料夾。若沒有自動帶上引號，請在路徑兩側加上雙引號，例如 `cd "/你的路徑/WUF-Translate-main"`。
+
+在終端機依序執行，每一行完成後再執行下一行：
+
+```sh
+node --version
+npm --version
+npm ci
+npm run build
+```
+
+前兩行會顯示版本；`npm ci` 會從網路安裝專案所需套件。最後看到 `Built clean-room extension to dist/wuf/`，代表建立成功。專案中會出現 `dist` 資料夾，裡面的 `wuf` 就是要載入的擴充功能。
+
+若出現「找不到 node／npm」，請完成 Node.js 安裝後關閉並重新開啟終端機。Windows 若顯示無法執行 `npm.ps1`，可在上述指令中將 `npm` 改為 `npm.cmd` 再執行。
+
+### 2. 載入瀏覽器
+
+1. 開啟 Chrome 或 Edge，在網址列輸入：
+   - Chrome：`chrome://extensions`
+   - Edge：`edge://extensions`
+2. 開啟「開發人員模式」。
+3. 按「載入未封裝項目」或「載入解壓縮」，選取剛建立的 **`dist/wuf` 資料夾**。不要選專案最外層，也不要選 ZIP 檔。
+4. 在瀏覽器工具列的「擴充功能」選單中，將 **WUF Translate** 釘選，方便之後開啟。
+
+看到 WUF 圖示就表示安裝完成。請保留整個專案資料夾；瀏覽器仍會從這個位置讀取檔案。
+
+## 第一次翻譯：先用 Google 翻譯
+
+擴充功能初始設定使用本機服務。如果你尚未安裝本機服務，請先依下列步驟改用 Google 翻譯；不必處理「喚醒本機模型」。
+
+### 翻譯網頁
+
+1. 按工具列的 WUF 圖示，再按齒輪開啟設定。
+2. 切到「網頁翻譯」，將「翻譯引擎」改為 **Google 翻譯（免費備援）**，目標語言填 `zh-TW`，代表台灣繁體中文。
+3. 設定會自動儲存，不需要找儲存按鈕。
+4. 開啟一般英文文章網頁，按 WUF 圖示，再按「翻譯網頁」。
+5. 可選「雙語對照」保留原文，或「僅顯示譯文」。需要恢復時按「顯示原文」。
+
+也可用 `Alt+S` 切換網頁翻譯；macOS 的 Alt 鍵就是 Option。瀏覽器設定頁、擴充功能商店等受保護頁面無法注入翻譯，請用一般網站測試。
+
+### 翻譯 YouTube 字幕
+
+1. 在 WUF 設定中切到「YouTube 字幕翻譯」。
+2. 將「翻譯引擎」改為 **Google 翻譯（免費備援）**，目標語言填 `zh-TW`。
+3. 往下找到「字幕情境與決策模型」，將「決策模型來源」改為 **不使用決策模型（保留本地字幕保護）**。這樣不需額外安裝 Laya。
+4. 開啟一支有英文字幕的 YouTube 影片，在影片播放器中開啟 CC 字幕，選英文或英文自動產生字幕。
+5. 按 WUF 圖示，開啟「YouTube 字幕」。若已經開著影片，重新整理分頁並播放，讓 WUF 取得字幕資料。
+6. 等候第一批翻譯完成，影片上會顯示雙語字幕；可在 WUF 面板調整字幕大小。
+
+**網頁與 YouTube 各有自己的翻譯引擎設定。** 改了網頁設定後，仍要另外設定 YouTube。Google 翻譯需要網路，也可能遇到服務限制；畫面中的「免費備援」是可自行選用的引擎，不代表所有錯誤都會自動切換到 Google。
+
+## 想用 AI 翻譯時再設定
+
+LLM（大型語言模型）可以把它想成「會讀句子、依指示產生文字的 AI」。WUF 負責送出原文與顯示結果，實際翻譯由你選的服務執行。**安裝 WUF 本身不會安裝或訓練 AI。**
+
+| 使用方式 | 需要準備 | 適合情況 |
+| --- | --- | --- |
+| Google 翻譯 | 網路連線 | 先確認功能能用，不想設定模型 |
+| 本機模型 | 已啟動、提供相容介面的本機翻譯服務 | 想使用自己的電腦執行 AI |
+| 線上自訂模型 | 服務商帳號、API 金鑰與模型名稱 | 願意將文字傳到線上服務，依其規則付費或使用額度 |
+
+### 本機模型：已有 Watchdog 或其他服務
+
+本機服務是另一個程式，必須先安裝並保持執行。[WUF Watchdog](https://github.com/Afteryoupie/WUF-Watchdog) 負責本機模型管理，與這個瀏覽器擴充功能分開維護。它的模型檔、執行環境與原生瀏覽器主機不會包含在本專案中；尚未準備好時可先繼續使用 Google 翻譯。
+
+1. 啟動你已設定好的 Watchdog 或其他提供 OpenAI 相容介面的本機服務。
+2. 到 WUF 設定 →「本機自訂模型」，填寫下列欄位：
+
+| 欄位 | 如何填寫 |
+| --- | --- |
+| API 網址 | Watchdog 預設為 `http://127.0.0.1:8080/v1`；使用其他程式時，填該程式提供的相容網址 |
+| API 金鑰 | 服務沒有要求時留空；有要求時依服務設定填寫 |
+| 模型名稱（Model ID） | 按「重新讀取模型清單」後選擇；Watchdog 也可用「回到服務預設模型」 |
+
+3. 按「測試模型運作」，確認成功後，再到「網頁翻譯」與／或「YouTube 字幕翻譯」，將翻譯引擎改為「本地模型（Watchdog／Ollama）」。
+4. 「專屬模型覆寫」先留空，代表沿用本機設定的模型。
+
+`127.0.0.1` 的意思是「你目前這台電腦」。它不是可從網路下載模型的網址，也不會讓尚未安裝的服務自動出現。一般相容服務可用已啟動的 HTTP 介面翻譯；Watchdog 的自動喚醒另需正確安裝原生瀏覽器主機 `com.wuf_translate.watchdog`。
+
+### 線上模型：使用服務商提供的 API
+
+API 可以理解為「讓 WUF 向翻譯服務送出文字的入口」，API 金鑰則是該入口的通行證。聊天網站的會員訂閱不一定包含 API 額度。
+
+1. 向你要使用的服務商取得 **API 網址、API 金鑰、模型名稱**。本擴充功能使用 OpenAI 相容的聊天介面；只有聊天網頁網址不能直接使用。
+2. 到 WUF 設定 →「線上自訂模型」，填入這三項資料。例如預設的 OpenRouter API 網址是 `https://openrouter.ai/api/v1`，模型名稱要填服務商提供的完整 Model ID，而不是自己取的名稱。
+3. 按「測試模型運作」。測試本身也會向服務發送請求，可能使用額度。
+4. 到「網頁翻譯」與／或「YouTube 字幕翻譯」，將引擎改為「線上自訂（OpenAI 相容／OpenRouter）」。
+
+本機與線上設定分開儲存，可以各自保留。初次使用時，溫度、思考等級、額外 JSON 與並行數先維持預設即可。
+
+## 決策模型與 Laya 是做什麼的？
+
+翻譯模型負責把原文翻成中文；**決策模型負責協助選擇處理方式**。在設定 →「YouTube 字幕翻譯」→「字幕情境與決策模型」可選三種模式：
+
+| 模式 | 功能與使用條件 |
+| --- | --- |
+| 不使用決策模型 | 不加主題詞義提示，仍保留本地斷句、音效標記清理、格式檢查與一次錯誤重試。不需要額外的決策服務 |
+| 本機 Laya | 由影片標題與開頭字幕判斷主題，為中文 AI 翻譯提供少量詞義提示，需要已提供 Laya 的本機服務 |
+| 自訂決策模型 | 用指定模型判斷字幕斷句、過濾與輸出格式；需要另外設定模型名稱與介面，額外請求可能增加等待時間 |
+
+Laya 目前會在攝影、汽車、園藝領域提供人工整理的詞義提示，例如攝影影片中的 `body` 可提示為「機身」。影片主題分類結果會暫存，每句只加上用得到的詞義，最多四組，不會每句都呼叫 Laya。分類時會用兩種選項順序交叉確認，因此一次影片分類不代表只有一個 HTTP 請求。
+
+Laya 不看影片畫面，也不會檢查整句譯文是否正確；判斷不明確時不加提示。這些提示目前用於本機／線上 AI 翻譯，Google 翻譯不會使用它們。
+
+如要啟用 Laya，先確認 Watchdog 已安裝並啟動相關模型，再選「本機 Laya」，端點預設為 `http://127.0.0.1:8080/v1/systemone`。若尚未準備好服務，先選「不使用決策模型」即可正常翻譯。
+
+我們以真實 YouTube 字幕做過小樣本測試，發現部分詞義有改善，但不能保證所有影片更準確或完全即時。測試方法、耗時與限制見[最小提示詞測試報告](docs/laya-subtitle-context.md)；[早期測試報告](docs/laya-youtube-evaluation.md)記錄的是改版前逐段決策流程，不能當作目前版本的效果。
+
+## 常用設定
+
+| 設定 | 白話說明 |
+| --- | --- |
+| 目標語言 `zh-TW` | 翻成台灣繁體中文；介面語言與翻譯目標語言是兩回事 |
+| 簡繁自動互轉（OpenCC） | 在翻譯結果上做中文字形與用詞轉換；不是外文翻譯模型 |
+| 自動翻譯指定網站 | 將目前網站加入自動翻譯清單 |
+| 跨分頁延續翻譯 | 在其他分頁延續網頁翻譯狀態 |
+| 每批涵蓋秒數 | 一次準備多少秒的影片字幕，預設 30 秒；越大不代表越快 |
+| 提前觸發秒數 | 在目前批次快用完前準備下一批，預設 10 秒 |
+| Prompt | 給 AI 的翻譯指示；字幕與文章分開設定，初次使用保留預設即可 |
+
+影片翻譯速度取決於服務回應、模型速度與字幕長度。若字幕跟不上，可先關閉自訂決策模型、改用回應較快的翻譯服務，並暫停影片等待第一批完成；先維持分批參數預設，避免一次送出過多內容。
+
+## 遇到問題時
+
+| 情況 | 可以依序嘗試 |
+| --- | --- |
+| 找不到 `dist/wuf` | 確認終端機位於內含 `package.json` 的資料夾，再執行 `npm ci`、`npm run build` |
+| 載入擴充功能失敗，找不到 manifest | 選取 `dist/wuf`，確認裡面有 `manifest.json` |
+| 顯示本機服務離線或無法喚醒 | 確認服務已安裝並啟動、API 網址正確；沒有要用本機服務時，將網頁與字幕引擎都改成 Google 翻譯 |
+| 線上服務出現 401／403 | 確認 API 金鑰、服務存取權限與模型名稱 |
+| 出現 429 | 通常是服務限流或額度問題；稍後重試，並檢查服務商額度與限制 |
+| YouTube 沒有譯文 | 確認影片有字幕、CC 已開、字幕引擎已設定、WUF「YouTube 字幕」已開，再重新整理並播放 |
+| 改了設定仍顯示舊譯文 | 在 WUF 面板按「清除快取」並確認，重新整理影片或網頁 |
+| 更新後仍是舊介面 | 重新建立檔案，在瀏覽器擴充功能管理頁按 WUF 的「重新載入」，再重新整理使用中的分頁 |
+| 譯文怪異或漏字 | 先查看來源字幕是否有辨識錯誤，再比較其他翻譯服務；Laya 只能提示部分詞義，不能修正所有翻譯錯誤 |
+
+回報問題時，請提供瀏覽器與系統版本、使用的翻譯引擎、錯誤文字及能重現的操作。請勿附上 API 金鑰。
+
+## 資料會送到哪裡？
+
+- Google 翻譯：待翻譯的文字會送到 Google 翻譯端點。
+- 線上自訂模型：文字與翻譯指示會送到你設定的服務商，計費與資料處理由該服務決定。
+- 本機模型：請求送到你設定的地址；只有實際在本機處理、沒有再轉送的服務，才能視為在本機翻譯。
+- Laya：影片標題與開頭字幕樣本會送到設定的決策端點，預設為本機 Watchdog。
+- 設定使用瀏覽器儲存空間保存；API 金鑰單獨存在本機儲存區，不包含在設定匯出中。匯出的設定仍可能含服務網址與個人偏好，分享前請先查看內容。
+
+擴充功能需要存取網頁內容才能翻譯，因此會要求 HTTP／HTTPS 網站權限。你可在瀏覽器的擴充功能詳細資料中管理網站存取權；限制後，相關網站的翻譯也會受影響。
+
+## 更新與備份
+
+設定頁的「備份與重設」可匯出／匯入設定；匯入設定後，API 金鑰需要在新環境重新填寫。
+
+若使用 Git 下載專案，可在專案資料夾依序執行：
+
+```sh
+git pull --ff-only
+npm ci
+npm run build
+```
+
+若使用 ZIP 下載，先匯出設定，再下載並解壓新版本、依安裝步驟建立檔案；若更換載入位置，請確認瀏覽器已指向新的 `dist/wuf`。
+
+不論哪種方式，更新完成後都要到擴充功能管理頁按「重新載入」，再重新整理已開啟的網頁與 YouTube 分頁。
+
+## 給開發者
+
+本專案為 TypeScript、Manifest V3 擴充功能。Node.js 22.18 以上可執行建置腳本使用的原生 TypeScript 載入。
+
+```sh
 npm ci
 npm run typecheck
 npm test
 ```
 
-Load `dist/wuf` as an unpacked extension in Edge or Chrome after building.
-The existing public extension key is preserved; do not regenerate identity.json
-for the installed extension. No signing private key is included.
+`npm test` 會先建置，再執行 `tests/*.test.mjs`。只需要建立擴充功能時，執行 `npm run build` 即可。
 
-The extension connects to the Watchdog HTTP API on `127.0.0.1:8080` and native
-host `com.wuf_translate.watchdog`; it does not import Watchdog source files.
-Local/online provider settings remain in browser storage.
+| 目錄 | 內容 |
+| --- | --- |
+| `wuf-src/` | 擴充功能原始碼、設定頁、彈出面板與翻譯流程 |
+| `scripts/` | 建置與診斷腳本 |
+| `tests/` | 自動化測試 |
+| `docs/` | Laya 真實字幕測試方法與結果 |
+| `dist/wuf/` | 建置後供瀏覽器載入的檔案，不提交到 Git |
 
-`tests/fixtures/legacy-public-key.json` contains only a public key used to assert
-that WUF has its own extension identity. Legacy extension code/tests are excluded.
+Watchdog 透過 HTTP API 與原生瀏覽器主機連接，原始碼不包含於本專案。`node_modules`、建置結果、診斷輸出、模型與本機憑證均不隨本儲存庫提供。請保留既有擴充功能公開識別金鑰，不要為已安裝版本重新產生 `identity.json`；測試 fixture 中的公開金鑰不是簽署私鑰。
 
-`node_modules`, `dist`, diagnostic outputs and local credentials are excluded from
-Git. Dependencies were copied from the existing installation for offline validation.
-Keep the existing LICENSE when publishing; this split does not change its terms.
+## 授權
 
-The original worktree remains at
-`C:/LLM_Project/translation_tools/wuf-typescript-extension` for history and rollback.
-Reload the browser extension from this project's `dist/wuf` after this split.
+請參閱 [LICENSE](LICENSE)。專案拆分與本次功能調整不改變既有授權條款。
