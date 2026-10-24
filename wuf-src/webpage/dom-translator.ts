@@ -236,9 +236,9 @@ export function applyTranslationToElement(
   badge.style.borderRadius = '4px';
   badge.style.fontSize = '0.95em';
   badge.style.lineHeight = '1.5';
-  badge.style.backgroundColor = 'rgba(235, 243, 255, 0.75)';
-  badge.style.color = '#1e293b';
-  badge.style.borderLeft = '3px solid #3b82f6';
+  badge.style.backgroundColor = 'rgba(180, 61, 29, 0.08)';
+  badge.style.color = '#242620';
+  badge.style.borderLeft = '3px solid #b43d1d';
   badge.style.boxSizing = 'border-box';
 
   mountRestoredNodes(badge, cleanTranslation, tagsMap, doc);

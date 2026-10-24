@@ -128,9 +128,9 @@ export function bindOptionsTabs(
       const idx = buttons.indexOf(btn);
       if (idx === -1) return;
       let nextIdx: number | null = null;
-      if (event.key === 'ArrowRight') {
+      if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
         nextIdx = (idx + 1) % buttons.length;
-      } else if (event.key === 'ArrowLeft') {
+      } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
         nextIdx = (idx - 1 + buttons.length) % buttons.length;
       } else if (event.key === 'Home') {
         nextIdx = 0;

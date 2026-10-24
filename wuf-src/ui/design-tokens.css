@@ -1,0 +1,104 @@
+:root, html[data-theme='light']  {
+  color-scheme: light;
+  --wuf-bg: #f5f3ec;
+  --wuf-surface: #fffcf5;
+  --wuf-surface-muted: #ece9df;
+  --wuf-border: #d6d7cc;
+  --wuf-control-border: #b8baa9;
+  --wuf-text: #242620;
+  --wuf-text-muted: #686b61;
+  --wuf-accent: #b43d1d;
+  --wuf-accent-text: var(--wuf-accent);
+  --wuf-accent-hover: #983216;
+  --wuf-accent-soft: #f5e8dc;
+  --wuf-on-accent: #ffffff;
+  --wuf-success: #397044;
+  --wuf-danger: #b43d1d;
+  --wuf-warn: #92400e;
+  --wuf-fast: 140ms;
+  --wuf-ease: cubic-bezier(.22, 1, .36, 1);
+}
+html[data-theme='dark']  {
+  color-scheme: dark;
+  --wuf-bg: #1c1e22;
+  --wuf-surface: #25282d;
+  --wuf-surface-muted: #30343a;
+  --wuf-border: #444a52;
+  --wuf-control-border: #838b96;
+  --wuf-text: #edece8;
+  --wuf-text-muted: #b5b7bc;
+  --wuf-accent: #b43d1d;
+  --wuf-accent-text: #ff8663;
+  --wuf-accent-hover: #a33519;
+  --wuf-accent-soft: #442a25;
+  --wuf-on-accent: #ffffff;
+  --wuf-success: #a0bd8d;
+  --wuf-danger: #ff8663;
+  --wuf-warn: #ddbc7e;
+}
+*  {
+  box-sizing: border-box;
+}
+[hidden]  {
+  display: none !important;
+}
+html[data-theme-pending] body  {
+  visibility: hidden;
+}
+body  {
+  margin: 0;
+  background: var(--wuf-bg);
+  color: var(--wuf-text);
+  font-family: 'Segoe UI Variable', 'Segoe UI', 'Noto Sans TC', system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+button, input, select, textarea  {
+  font: inherit;
+}
+button  {
+  cursor: pointer;
+}
+button, input, select, textarea  {
+  transition: background-color var(--wuf-fast), border-color var(--wuf-fast), color var(--wuf-fast), box-shadow var(--wuf-fast);
+}
+:focus-visible  {
+  outline: 2px solid var(--wuf-accent-text);
+  outline-offset: 4px;
+}
+button:disabled, input:disabled, select:disabled  {
+  cursor: not-allowed;
+  opacity: .55;
+}
+button:active:not(:disabled)  {
+  filter: brightness(.92);
+}
+input[type='checkbox']  {
+  accent-color: var(--wuf-accent);
+}
+input::placeholder, textarea::placeholder  {
+  color: var(--wuf-text-muted);
+  opacity: 1;
+}
+::selection  {
+  background: var(--wuf-accent-soft);
+  color: var(--wuf-text);
+}
+@keyframes wuf-enter  {
+  from  {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to  {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce)  {
+  *, *::before, *::after  {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}

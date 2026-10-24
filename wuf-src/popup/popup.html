@@ -26,7 +26,7 @@
             data-wuf-i18n-title="popup.toggleTheme"
             title="Toggle theme"
             aria-label="Toggle theme"
-          >🌓</button>
+          ><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 4v16a8 8 0 0 0 0-16Z" fill="currentColor" stroke="none"/></svg></button>
           <button
             type="button"
             id="wuf-open-options"
@@ -34,7 +34,7 @@
             data-wuf-i18n-title="common.openOptions"
             title="Open Options"
             aria-label="Open Options"
-          >⚙️</button>
+          ><svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="18.93,9.13 21.78,9.92 21.78,14.08 18.93,14.87 18.93,14.87 20.39,17.45 17.45,20.39 14.87,18.93 14.87,18.93 14.08,21.78 9.92,21.78 9.13,18.93 9.13,18.93 6.55,20.39 3.61,17.45 5.07,14.87 5.07,14.87 2.22,14.08 2.22,9.92 5.07,9.13 5.07,9.13 3.61,6.55 6.55,3.61 9.13,5.07 9.13,5.07 9.92,2.22 14.08,2.22 14.87,5.07 14.87,5.07 17.45,3.61 20.39,6.55 18.93,9.13"/><circle cx="12" cy="12" r="3"/></svg></button>
         </div>
       </header>
 
@@ -46,7 +46,7 @@
           class="wuf-tool-btn"
           data-mode="translate"
         >
-          <span class="wuf-action-icon">🌐</span>
+          <span class="wuf-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 5h12M9 3v2m-4 4c1 4 4 7 8 9M13 5c0 6-4 11-10 14m12 0 4-10 4 10m-6-3h4"/></svg></span>
           <span id="wuf-translate-label" data-wuf-i18n="popup.translatePage">翻譯網頁</span>
           <span class="wuf-shortcut-cue">Alt+S</span>
         </button>
@@ -62,9 +62,9 @@
       </section>
 
       <!-- 2.5 Current Progress Status Card -->
-      <section id="wuf-progress-section" class="wuf-progress-card">
+      <section id="wuf-progress-section" class="wuf-progress-card" role="status">
         <div class="wuf-progress-row">
-          <span class="wuf-progress-icon" id="wuf-progress-icon">📄</span>
+          <span class="wuf-progress-icon" id="wuf-progress-icon" aria-hidden="true">○</span>
           <span class="wuf-progress-text" id="wuf-progress-text" data-wuf-i18n="popup.progressOriginal">原文頁面（未翻譯）</span>
         </div>
         <div class="wuf-progress-bar-wrap" id="wuf-progress-bar-wrap" hidden>
@@ -76,8 +76,8 @@
       <section class="wuf-settings-card">
         <!-- Display Mode Toggle -->
         <div class="wuf-row">
-          <span class="wuf-row-label" data-wuf-i18n="options.displayModeLabel">顯示模式</span>
-          <div class="wuf-seg-group" role="radiogroup">
+          <span class="wuf-row-label" id="wuf-display-mode-label" data-wuf-i18n="options.displayModeLabel">顯示模式</span>
+          <div class="wuf-seg-group" role="radiogroup" aria-labelledby="wuf-display-mode-label">
             <button
               type="button"
               id="wuf-mode-single"
@@ -122,16 +122,16 @@
         <div class="wuf-row">
           <span class="wuf-row-label" id="wuf-auto-site-label" data-wuf-i18n="popup.autoTranslateSite">自動翻譯指定網站</span>
           <label class="wuf-switch">
-            <input type="checkbox" id="wuf-auto-site-toggle" />
+            <input type="checkbox" id="wuf-auto-site-toggle" aria-labelledby="wuf-auto-site-label" />
             <span class="wuf-slider"></span>
           </label>
         </div>
 
         <!-- OpenCC Simplified/Traditional Conversion Switch -->
         <div class="wuf-row" id="wuf-opencc-row">
-          <span class="wuf-row-label" data-wuf-i18n="popup.openccAuto">簡繁自動互轉（免費）</span>
+          <span class="wuf-row-label" id="wuf-opencc-label" data-wuf-i18n="popup.openccAuto">簡繁自動互轉（免費）</span>
           <label class="wuf-switch">
-            <input type="checkbox" id="wuf-opencc-toggle" />
+            <input type="checkbox" id="wuf-opencc-toggle" aria-labelledby="wuf-opencc-label" />
             <span class="wuf-slider"></span>
           </label>
         </div>
@@ -141,7 +141,7 @@
       <section class="wuf-settings-card wuf-context-card" id="wuf-yt-box" hidden>
         <div class="wuf-row">
           <div class="wuf-yt-label-group">
-            <span class="wuf-row-label" data-wuf-i18n="popup.ytSubtitlesToggle">YouTube 雙語字幕</span>
+            <span class="wuf-row-label" id="wuf-yt-label" data-wuf-i18n="popup.ytSubtitlesToggle">YouTube 雙語字幕</span>
             <button
               type="button"
               id="wuf-btn-translate-youtube"
@@ -152,7 +152,7 @@
             </button>
           </div>
           <label class="wuf-switch">
-            <input type="checkbox" id="wuf-yt-subtitles-toggle" />
+            <input type="checkbox" id="wuf-yt-subtitles-toggle" aria-labelledby="wuf-yt-label" />
             <span class="wuf-slider"></span>
           </label>
         </div>
@@ -173,12 +173,15 @@
       </section>
 
       <!-- 5. Engine & Local Watchdog Model Card -->
-      <section class="wuf-settings-card wuf-model-card">
-        <div class="wuf-model-card-header">
-          <div class="wuf-status-line">
+      <details class="wuf-settings-card wuf-model-card" id="wuf-model-details">
+        <summary class="wuf-model-card-header">
+          <span class="wuf-row-label" data-wuf-i18n="popup.engineLabel">翻譯引擎</span>
+          <span class="wuf-status-line">
             <span id="wuf-status-dot" class="wuf-dot"></span>
             <span id="wuf-status-text" class="wuf-status-text">讀取中…</span>
-          </div>
+          </span>
+          <span id="wuf-engine-caption" class="wuf-status-text" hidden></span>
+        </summary>
           <button
             type="button"
             id="wuf-wake-btn"
@@ -188,14 +191,12 @@
           >
             喚醒本機模型
           </button>
-        </div>
-
         <div class="wuf-row">
           <label for="wuf-engine-select" class="wuf-row-label" data-wuf-i18n="popup.engineLabel">翻譯引擎</label>
           <select id="wuf-engine-select" class="wuf-select">
-            <option value="openai-compat-local">本地模型 (Watchdog / Ollama)</option>
-            <option value="openai-compat-online">線上自訂 (OpenAI 相容 / OpenRouter)</option>
-            <option value="google-translate">Google 翻譯 (免費備援)</option>
+            <option value="openai-compat-local" data-wuf-i18n="engine.openaiCompatLocal">本地模型 (Watchdog / Ollama)</option>
+            <option value="openai-compat-online" data-wuf-i18n="engine.openaiCompatOnline">線上自訂 (OpenAI 相容 / OpenRouter)</option>
+            <option value="google-translate" data-wuf-i18n="engine.googleTranslate">Google 翻譯 (免費備援)</option>
           </select>
         </div>
 
@@ -203,7 +204,7 @@
           <label for="wuf-local-model-select" class="wuf-row-label" data-wuf-i18n="popup.localModelOverride">本地模型</label>
           <select id="wuf-local-model-select" class="wuf-select wuf-mono"></select>
         </div>
-      </section>
+      </details>
 
       <!-- 6. Cache Management -->
       <div class="wuf-cache-bar">
@@ -216,10 +217,6 @@
         </span>
       </div>
 
-      <!-- 7. Footer: Document Translator & Shortcut Hint -->
-      <footer class="wuf-footer">
-        <span class="wuf-shortcut-hint" data-wuf-i18n="popup.shortcutHint">Alt+S 翻譯／還原</span>
-      </footer>
     </main>
     <script type="module" src="popup.js"></script>
   </body>

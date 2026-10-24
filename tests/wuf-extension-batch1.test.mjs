@@ -436,6 +436,13 @@ test('Options HTML and controller implement a 6-tab layout separating Webpage an
     assert.equal(panels[2].hidden, false);
     assert.equal(buttons[2].focused, true);
 
+    // Vertical sidebar navigation must follow the same roving-focus contract.
+    buttons[2].dispatchEvent(Object.assign(new Event('keydown'), { key: 'ArrowDown' }));
+    assert.equal(controller.getActiveTab(), 'local');
+    assert.equal(buttons[3].focused, true);
+    buttons[3].dispatchEvent(Object.assign(new Event('keydown'), { key: 'ArrowUp' }));
+    assert.equal(controller.getActiveTab(), 'youtube');
+
     // Click 'online' tab (index 4)
     buttons[4].dispatchEvent(new Event('click'));
     assert.equal(controller.getActiveTab(), 'online');

@@ -101,13 +101,28 @@ export async function initPopup(): Promise<void> {
     const saved = snapshot.savedSettings;
     const locale = resolveUiLocale(saved.uiLocale);
     currentLocale = locale;
+    document.documentElement.lang = locale;
 
     // Apply i18n
     applyI18nToDom(document, locale);
 
+    const usesLocalModel = saved.webpage.engine === 'openai-compat-local';
+    const localModelRow = document.getElementById('wuf-local-model-row');
+    if (localModelRow) localModelRow.hidden = !usesLocalModel;
+    const statusLine = document.querySelector<HTMLElement>('.wuf-status-line');
+    if (statusLine) statusLine.hidden = !usesLocalModel;
+    const engineCaption = document.getElementById('wuf-engine-caption');
+    if (engineCaption) {
+      engineCaption.hidden = usesLocalModel;
+      engineCaption.textContent = t(locale, saved.webpage.engine === 'google-translate'
+        ? 'engine.googleTranslate' : 'engine.openaiCompatOnline');
+    }
+    if (!usesLocalModel && wakeBtn) wakeBtn.hidden = true;
+
     // Pill
     if (modelPill) {
-      modelPill.textContent = snapshot.activeProvider.profileType === 'local' ? 'Local' : 'Cloud';
+      modelPill.textContent = usesLocalModel ? 'Local'
+        : saved.webpage.engine === 'google-translate' ? 'Google' : 'Cloud';
     }
 
     // Display mode buttons
@@ -115,8 +130,10 @@ export async function initPopup(): Promise<void> {
     if (modeSingleBtn && modeDualBtn) {
       modeSingleBtn.classList.toggle('active', isSingle);
       modeSingleBtn.setAttribute('aria-checked', String(isSingle));
+      modeSingleBtn.tabIndex = isSingle ? 0 : -1;
       modeDualBtn.classList.toggle('active', !isSingle);
       modeDualBtn.setAttribute('aria-checked', String(!isSingle));
+      modeDualBtn.tabIndex = isSingle ? -1 : 0;
     }
 
     // Target language
@@ -181,7 +198,7 @@ export async function initPopup(): Promise<void> {
       translateLabel.textContent = t(currentLocale, 'popup.translating');
       if (editPageBtn) editPageBtn.hidden = true;
 
-      if (progressIcon) progressIcon.textContent = '🔄';
+      if (progressIcon) progressIcon.textContent = '◌';
       if (progressText) {
         if (progressInfo && progressInfo.totalUnits && progressInfo.totalUnits > 0) {
           const completed = progressInfo.completedUnits || 0;
@@ -206,7 +223,7 @@ export async function initPopup(): Promise<void> {
           : t(currentLocale, 'popup.editTranslations');
         editPageBtn.classList.toggle('active', isEditing);
       }
-      if (progressIcon) progressIcon.textContent = '✅';
+      if (progressIcon) progressIcon.textContent = '✓';
       if (progressText) progressText.textContent = t(currentLocale, 'popup.progressTranslated');
       if (progressBarWrap) progressBarWrap.hidden = true;
     } else {
@@ -214,7 +231,7 @@ export async function initPopup(): Promise<void> {
       translateBtn.disabled = false;
       translateLabel.textContent = t(currentLocale, 'popup.translatePage');
       if (editPageBtn) editPageBtn.hidden = true;
-      if (progressIcon) progressIcon.textContent = '📄';
+      if (progressIcon) progressIcon.textContent = '○';
       if (progressText) progressText.textContent = t(currentLocale, 'popup.progressOriginal');
       if (progressBarWrap) progressBarWrap.hidden = true;
     }
@@ -244,7 +261,7 @@ export async function initPopup(): Promise<void> {
           if (ytSubtitlesToggle) ytSubtitlesToggle.checked = Boolean(ytResp.active);
           if (ytCaptionSize) ytCaptionSize.value = String(ytResp.captionScale || 100);
           if (ytResp.active && progressIcon && progressText) {
-            progressIcon.textContent = '🎬';
+            progressIcon.textContent = '▶';
             const segCount = ytResp.rawSegmentsCount || 0;
             progressText.textContent = `${t(currentLocale, 'popup.progressYtActive')} (${segCount})`;
             if (progressBarWrap) progressBarWrap.hidden = true;
@@ -276,11 +293,13 @@ export async function initPopup(): Promise<void> {
   // 5. Watchdog Probe & Models
   const refreshWatchdog = async () => {
     if (!currentSnapshot) return;
+    if (currentSnapshot.savedSettings.webpage.engine !== 'openai-compat-local') return;
     const baseUrl = currentSnapshot.savedSettings.providers.local.baseUrl;
     const probeResp = await sendWufRuntimeMessage<WatchdogProbeResult>({
       type: 'wuf:probe-watchdog',
       baseUrl,
     });
+    if (currentSnapshot.savedSettings.webpage.engine !== 'openai-compat-local') return;
 
     if (statusDot) {
       statusDot.className = 'wuf-dot';
@@ -305,6 +324,7 @@ export async function initPopup(): Promise<void> {
         case 'sleeping':
           statusText.textContent = t(currentLocale, 'popup.statusSleeping');
           if (wakeBtn) wakeBtn.hidden = false;
+          (document.getElementById('wuf-model-details') as HTMLDetailsElement | null)?.setAttribute('open', '');
           break;
         case 'starting':
           statusText.textContent = t(currentLocale, 'popup.statusStarting');
@@ -355,9 +375,9 @@ export async function initPopup(): Promise<void> {
       type: 'wuf:get-cache-stats',
     });
     if (resp.ok) {
-      cacheInfo.textContent = `${t(currentLocale, 'popup.cacheLabel')}：${resp.data.count} 筆`;
+      cacheInfo.textContent = `${t(currentLocale, 'popup.cacheLabel')} · ${new Intl.NumberFormat(currentLocale).format(resp.data.count)}`;
     } else {
-      cacheInfo.textContent = `${t(currentLocale, 'popup.cacheLabel')}：0 筆`;
+      cacheInfo.textContent = `${t(currentLocale, 'popup.cacheLabel')} · 0`;
     }
   };
 
@@ -459,6 +479,17 @@ export async function initPopup(): Promise<void> {
   });
 
   // Display Mode Buttons
+  for (const button of [modeSingleBtn, modeDualBtn]) {
+    button?.addEventListener('keydown', event => {
+      if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      const next = event.key === 'Home' ? modeSingleBtn
+        : event.key === 'End' ? modeDualBtn
+        : button === modeSingleBtn ? modeDualBtn : modeSingleBtn;
+      next?.focus();
+      next?.click();
+    });
+  }
   modeSingleBtn?.addEventListener('click', async () => {
     if (!currentSnapshot) return;
     await saveSettings({
@@ -584,6 +615,7 @@ export async function initPopup(): Promise<void> {
     await saveSettings({
       webpage: { ...currentSnapshot.savedSettings.webpage, engine },
     });
+    await refreshWatchdog();
   });
 
   // Local Model Override
@@ -633,7 +665,7 @@ export async function initPopup(): Promise<void> {
     if (clearConfirm) clearConfirm.hidden = true;
     await sendWufRuntimeMessage({ type: 'wuf:clear-cache' });
     if (cacheInfo) {
-      cacheInfo.textContent = `${t(currentLocale, 'popup.cacheLabel')}：0 筆 (${t(currentLocale, 'popup.cacheCleared')})`;
+      cacheInfo.textContent = `${t(currentLocale, 'popup.cacheLabel')} · 0 (${t(currentLocale, 'popup.cacheCleared')})`;
     }
   });
 

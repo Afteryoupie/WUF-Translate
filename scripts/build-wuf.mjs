@@ -26,8 +26,9 @@ copyFileSync(resolve(srcDir, 'popup', 'popup.html'), resolve(outDir, 'popup.html
 copyFileSync(resolve(srcDir, 'popup', 'popup.css'), resolve(outDir, 'popup.css'));
 copyFileSync(resolve(srcDir, 'options', 'options.html'), resolve(outDir, 'options.html'));
 copyFileSync(resolve(srcDir, 'options', 'options.css'), resolve(outDir, 'options.css'));
+copyFileSync(resolve(srcDir, 'ui', 'design-tokens.css'), resolve(outDir, 'design-tokens.css'));
 
-// 3. Copy multi-size crisp extension icons (generated from Border Collie vector)
+// 3. Copy multi-size extension icons generated from the W vector
 const iconsDir = resolve(outDir, 'icons');
 mkdirSync(iconsDir, { recursive: true });
 for (const size of ['16', '32', '48', '128']) {

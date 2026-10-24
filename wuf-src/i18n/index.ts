@@ -41,4 +41,12 @@ export function applyI18nToDom(root: ParentNode, locale: UiLocale): void {
       el.textContent = t(locale, key);
     }
   }
+  for (const el of root.querySelectorAll<HTMLElement>('[data-wuf-i18n-title]')) {
+    const key = el.getAttribute('data-wuf-i18n-title') as WufI18nKey | null;
+    if (key && key in WUF_DICTIONARIES['zh-TW']) {
+      const label = t(locale, key);
+      el.title = label;
+      el.setAttribute('aria-label', label);
+    }
+  }
 }
