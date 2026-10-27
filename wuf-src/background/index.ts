@@ -19,7 +19,7 @@ import {
   probeWatchdogEndpoint,
   switchLocalModel,
 } from '../lib/watchdog-client.ts';
-import { registerPageContextMenus } from '../lib/page-context-menu.ts';
+import { refreshPageContextMenu, registerPageContextMenus } from '../lib/page-context-menu.ts';
 import { globalCacheManager } from '../lib/cache-manager.ts';
 import { WufProviderError } from '../providers/errors.ts';
 import { executeTranslation } from '../providers/index.ts';
@@ -337,17 +337,19 @@ export async function handleRuntimeMessage(
       }
 
       case 'wuf:set-page-translated': {
-        if (message.tabId != null && globalThis.chrome?.action?.setBadgeText) {
+        const tabId = message.tabId ?? sender?.tab?.id;
+        if (tabId != null && globalThis.chrome?.action?.setBadgeText) {
           await globalThis.chrome.action.setBadgeText({
-            tabId: message.tabId,
+            tabId,
             text: message.translated ? 'TR' : '',
           });
           if (message.translated) {
             await globalThis.chrome.action.setBadgeBackgroundColor({
-              tabId: message.tabId,
+              tabId,
               color: '#007AFF',
             });
           }
+          await refreshPageContextMenu();
         }
         return { ok: true, data: { success: true } };
       }

@@ -111,22 +111,20 @@ export async function executeTranslation(
         err instanceof WufProviderError &&
         err.message.includes('Segment count mismatch');
 
-      if (texts.length > 1 && (isMismatch || !options?.signal?.aborted)) {
+      if (texts.length > 1 && isMismatch && !options?.signal?.aborted) {
         const mid = Math.floor(texts.length / 2);
-        const [left, right] = await Promise.all([
-          executeTranslation(
+        const left = await executeTranslation(
             { ...request, texts: texts.slice(0, mid) },
             settings,
             secrets,
             options,
-          ),
-          executeTranslation(
+          );
+        const right = await executeTranslation(
             { ...request, texts: texts.slice(mid) },
             settings,
             secrets,
             options,
-          ),
-        ]);
+          );
         return {
           translations: [...left.translations, ...right.translations],
           engine,

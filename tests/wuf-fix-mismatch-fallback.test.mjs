@@ -68,3 +68,16 @@ test('executeTranslation: automatically recovers from Segment count mismatch via
     globalThis.fetch = originalFetch;
   }
 });
+
+test('HTTP failures do not fan out into recursive retries', async () => {
+  const settings = structuredClone(DEFAULT_SETTINGS);
+  settings.providers.online.baseUrl = 'https://translation.example/v1';
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => { calls++; return new Response('Unavailable', { status: 503 }); };
+  try {
+    await assert.rejects(executeTranslation({ texts: ['one', 'two', 'three', 'four'], targetLanguage: 'zh-TW',
+      engine: 'openai-compat-online', purpose: 'webpage' }, settings, structuredClone(DEFAULT_LOCAL_SECRETS)));
+    assert.equal(calls, 1);
+  } finally { globalThis.fetch = originalFetch; }
+});

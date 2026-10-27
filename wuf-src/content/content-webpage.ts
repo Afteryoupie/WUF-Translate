@@ -6,11 +6,49 @@ import { WufDomTranslator } from '../webpage/dom-translator.ts';
 let pageTranslator: WufDomTranslator | null = null;
 let isEditing = false;
 
+let progressHost: HTMLDivElement | null = null;
+let progressLabel: HTMLDivElement | null = null;
+let progressTimer: ReturnType<typeof setTimeout> | undefined;
+
+function showTranslationProgress(completed: number, total: number, active: boolean): void {
+  clearTimeout(progressTimer);
+  if (!active && total === 0) {
+    progressHost?.remove();
+    progressHost = null;
+    progressLabel = null;
+    return;
+  }
+  if (!progressHost) {
+    progressHost = document.createElement('div');
+    progressHost.setAttribute('data-wuf-ignore', 'true');
+    progressHost.style.cssText = 'all: initial !important; position: fixed !important; bottom: max(24px, env(safe-area-inset-bottom)) !important; left: 50% !important; transform: translateX(-50%) !important; z-index: 2147483647 !important; pointer-events: none !important;';
+    const shadow = progressHost.attachShadow({ mode: 'closed' });
+    progressLabel = document.createElement('div');
+    progressLabel.setAttribute('role', 'status');
+    progressLabel.setAttribute('aria-live', 'polite');
+    progressLabel.setAttribute('aria-atomic', 'true');
+    progressLabel.style.cssText = 'padding: 10px 18px; border-radius: 999px; background: #242620; color: #fff; font: 14px/1.5 system-ui, sans-serif; font-variant-numeric: tabular-nums; white-space: nowrap; box-shadow: 0 4px 16px #0003;';
+    shadow.appendChild(progressLabel);
+    document.documentElement.appendChild(progressHost);
+  }
+  const label = active ? '翻譯中' : completed === total ? '翻譯完成' : '翻譯已停止';
+  progressLabel!.textContent = total > 0 ? `${label}（${completed}/${total}）` : '準備翻譯中…';
+  if (!active) {
+    progressTimer = setTimeout(() => {
+      progressHost?.remove();
+      progressHost = null;
+      progressLabel = null;
+    }, 2500);
+  }
+}
+
 function ensureTranslator(): WufDomTranslator {
   if (pageTranslator) return pageTranslator;
   pageTranslator = new WufDomTranslator({
-    root: document.body,
+    // Keep YouTube's endless recommendation feed out of the comment queue.
+    root: document.querySelector('ytd-watch-flexy #primary') || document.body,
     doc: document,
+    onProgress: showTranslationProgress,
     onStateChange: (translated) => {
       void sendWufRuntimeMessage({
         type: 'wuf:set-page-translated',
@@ -45,6 +83,13 @@ function ensureTranslator(): WufDomTranslator {
         resp.data.webpageProvider,
         resp.data.webpageProvider.profileType,
       );
+      // Local translation models often do not preserve multi-item delimiters.
+      // One item per request also lets each comment appear as soon as it is ready.
+      if (location.hostname.endsWith('youtube.com') && wp.engine === 'openai-compat-local') {
+        batchConfig.webConcurrency = 1;
+        batchConfig.webBatchUnits = 1;
+        batchConfig.firstBatchUnits = 1;
+      }
       return {
         engine: wp.engine,
         targetLanguage: wp.targetLanguage,

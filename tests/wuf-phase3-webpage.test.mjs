@@ -182,3 +182,103 @@ test('Webpage Monolingual Mode: replaces in-place, records original text and res
   assert.equal(p.hasAttribute('data-wuf-original'), false);
   assert.equal(p.textContent, 'English source.');
 });
+
+test('Inline comment text remains visible to the translator and restores a translated link', () => {
+  const p = new MockElement('P');
+  const span = new MockElement('SPAN', 'This is a great video');
+  p.appendChild(span);
+  const { text, tagsMap } = extractTranslatableContent(p);
+  assert.equal(text, '<<<WUF_TAG_0>>>This is a great video<<<WUF_END_0>>>');
+  const container = new MockElement('DIV');
+  mountRestoredNodes(container, '<<<WUF_TAG_0>>>這部影片很棒<<<WUF_END_0>>>', tagsMap, new MockDocument());
+  assert.equal(container.children[0].tagName, 'SPAN');
+  assert.equal(container.children[0].textContent, '這部影片很棒');
+});
+
+test('YouTube legacy and current comment bodies are collected and receive translations', async () => {
+  const { collectTranslatableUnits, WufDomTranslator } = await import('../dist/wuf/index.js');
+  for (const renderer of ['ytd-comment-renderer', 'ytd-comment-view-model']) {
+    const comment = new MockElement('YT-ATTRIBUTED-STRING', 'Great video, thank you!');
+    const root = {
+      querySelectorAll(selector) {
+        return selector.includes(`${renderer} #content-text`) ? [comment] : [];
+      },
+    };
+    assert.equal(collectTranslatableUnits(root).length, 1);
+    const progress = [];
+    const translator = new WufDomTranslator({
+      root, doc: new MockDocument(),
+      getConfig: async () => ({ engine: 'google', targetLanguage: 'zh-TW', displayMode: 'bilingual',
+        batchConfig: { webConcurrency: 1, webBatchUnits: 10, webBatchChars: 1000, firstBatchUnits: 10, firstBatchChars: 1000 } }),
+      translateBatch: async texts => { assert.deepEqual(texts, ['Great video, thank you!']); return ['影片很棒，謝謝！']; },
+      onProgress: (...args) => progress.push(args),
+    });
+    await translator.handleTranslatePreset();
+    assert.equal(comment.querySelector('.wuf-bilingual-translation').textContent, '影片很棒，謝謝！');
+    assert.deepEqual(progress.at(-1), [1, 1, false]);
+    translator.restorePage();
+  }
+});
+
+test('Empty translation results cannot report completion', async () => {
+  const { WufDomTranslator } = await import('../dist/wuf/index.js');
+  const p = new MockElement('P', 'English comment');
+  const translator = new WufDomTranslator({
+    root: { querySelectorAll: () => [p] }, doc: new MockDocument(),
+    getConfig: async () => ({ engine: 'google', targetLanguage: 'zh-TW', displayMode: 'bilingual',
+      batchConfig: { webConcurrency: 1, webBatchUnits: 10, webBatchChars: 1000, firstBatchUnits: 10, firstBatchChars: 1000 } }),
+    translateBatch: async () => [''],
+  });
+  await assert.rejects(translator.handleTranslatePreset(), /空白或不完整/);
+  assert.equal(translator.translated, false);
+  assert.equal(translator.completedUnits, 0);
+});
+
+test('YouTube comment wrappers are sent as plain prose without formatting markers', () => {
+  const comment = new MockElement('YT-ATTRIBUTED-STRING', 'A thoughtful comment.');
+  comment.id = 'content-text';
+  comment.appendChild(new MockElement('SPAN', 'A thoughtful comment.'));
+  assert.deepEqual(extractTranslatableContent(comment), { text: 'A thoughtful comment.' });
+});
+
+test('Incremental translation shares one cancellable queue and reports actual progress', async () => {
+  const { WufDomTranslator } = await import('../dist/wuf/index.js');
+  const nodes = [new MockElement('P', 'First comment')];
+  let release;
+  let pendingSignal;
+  const progress = [];
+  const tr = new WufDomTranslator({
+    root: { querySelectorAll: () => nodes }, doc: new MockDocument(),
+    getConfig: async () => ({ engine: 'openai-compat-local', targetLanguage: 'zh-TW', displayMode: 'bilingual',
+      batchConfig: { webConcurrency: 1, webBatchUnits: 1, webBatchChars: 1000, firstBatchUnits: 1, firstBatchChars: 1000 } }),
+    translateBatch: async (texts, signal) => {
+      if (texts[0] === 'First comment') return ['第一則留言'];
+      pendingSignal = signal;
+      return new Promise(resolve => { release = resolve; });
+    },
+    onProgress: (...args) => progress.push(args),
+  });
+  await tr.handleTranslatePreset();
+  const second = new MockElement('P', 'Second comment');
+  nodes.push(second);
+  const pending = tr.handleTranslatePreset({ incremental: true, translateOnly: true, force: true });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(tr.translating, true);
+  assert.equal(tr.totalUnits, 2);
+  tr.restorePage();
+  assert.equal(pendingSignal.aborted, true);
+  release(['第二則留言']);
+  await pending;
+  assert.equal(second.querySelector('.wuf-bilingual-translation'), null);
+  assert.deepEqual(progress.at(-1), [0, 0, false]);
+});
+
+test('Hidden responsive copies and chapter menus are excluded from translation', async () => {
+  const { collectTranslatableUnits } = await import('../dist/wuf/index.js');
+  const visible = new MockElement('P', 'Visible comment');
+  visible.getClientRects = () => [{}];
+  const hidden = new MockElement('P', 'Hidden duplicate');
+  hidden.getClientRects = () => [];
+  const units = collectTranslatableUnits({ querySelectorAll: () => [visible, hidden] });
+  assert.deepEqual(units.map(unit => unit.sourceText), ['Visible comment']);
+});

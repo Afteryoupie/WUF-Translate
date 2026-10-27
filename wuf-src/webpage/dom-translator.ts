@@ -20,7 +20,7 @@ export interface WebpageBatch {
 }
 
 const TRANSLATABLE_SELECTOR =
-  'p, h1, h2, h3, h4, h5, h6, li, blockquote, td, th, figcaption, dt, dd';
+  'p, h1, h2, h3, h4, h5, h6, li, blockquote, td, th, figcaption, dt, dd, ytd-comment-renderer #content-text, ytd-comment-view-model #content-text';
 
 const EXCLUDED_ANCESTOR_SELECTOR =
   'script, style, noscript, code, pre, textarea, input, select, button, svg, math, [contenteditable="true"], [data-wuf-ignore], .wuf-bilingual-translation';
@@ -43,7 +43,11 @@ const INLINE_TAG_NAMES = new Set([
 export function isTranslatableElement(el: Element): el is HTMLElement {
   if (!el || typeof (el as HTMLElement).textContent !== 'string') return false;
   if (el.getAttribute('data-wuf-injected') === 'true') return false;
+  // Hidden chapter menus and duplicate responsive layouts need no translation.
+  if (typeof el.getClientRects === 'function' && el.getClientRects().length === 0) return false;
   if (el.closest?.(EXCLUDED_ANCESTOR_SELECTOR)) return false;
+  // Author handles and comment metadata are not prose to translate.
+  if (el.closest?.('ytd-comment-renderer, ytd-comment-view-model') && el.id !== 'content-text') return false;
   const text = (el.textContent || '').trim();
   if (!text || text.length < 2) return false;
   // Skip pure numbers or punctuation
@@ -59,6 +63,9 @@ export function extractTranslatableContent(el: HTMLElement): {
   text: string;
   tagsMap?: Map<string, Node>;
 } {
+  // YouTube attributed strings are framework-owned wrappers, not semantic inline markup.
+  // Sending their placeholders to translation models can echo English or corrupt delimiters.
+  if (el.id === 'content-text') return { text: (el.textContent || '').trim() };
   // If element has no child elements, return plain text directly
   if (el.children.length === 0) {
     return { text: (el.textContent || '').trim() };
@@ -91,7 +98,9 @@ export function extractTranslatableContent(el: HTMLElement): {
       // Inline element node
       const marker = `<<<WUF_TAG_${tagCounter++}>>>`;
       tagsMap.set(marker, node.cloneNode(true));
-      text += marker;
+      text += (node as Element).tagName === 'CODE'
+        ? marker
+        : `${marker}${node.textContent || ''}<<<WUF_END_${tagCounter - 1}>>>`;
     }
   }
 
@@ -117,9 +126,19 @@ export function mountRestoredNodes(
     return;
   }
 
-  const parts = translatedText.split(/(<<<WUF_TAG_\d+>>>)/g);
+  const parts = translatedText.split(/(<<<WUF_TAG_\d+>>>[\s\S]*?<<<WUF_END_\d+>>>|<<<WUF_TAG_\d+>>>)/g);
   for (const part of parts) {
     if (!part) continue;
+    const wrapped = part.match(/^<<<WUF_TAG_(\d+)>>>([\s\S]*)<<<WUF_END_\1>>>$/);
+    if (wrapped) {
+      const original = tagsMap.get(`<<<WUF_TAG_${wrapped[1]}>>>`);
+      if (original) {
+        const clone = original.cloneNode(false);
+        clone.textContent = wrapped[2];
+        container.appendChild(clone);
+        continue;
+      }
+    }
     if (tagsMap.has(part)) {
       const originalNode = tagsMap.get(part);
       if (originalNode) {
@@ -283,6 +302,7 @@ export interface DomTranslatorOptions {
     displayMode: DisplayMode;
     batchConfig: WebpageBatchConfig;
   }>;
+  onProgress?: (completed: number, total: number, active: boolean) => void;
   onStateChange?: (translated: boolean) => void;
 }
 
@@ -292,8 +312,14 @@ export class WufDomTranslator {
   private translateBatchFn: DomTranslatorOptions['translateBatch'];
   private getConfigFn: DomTranslatorOptions['getConfig'];
   private onStateChange?: (translated: boolean) => void;
+  private onProgress?: DomTranslatorOptions['onProgress'];
+  private reportProgress(): void {
+    this.onProgress?.(this.completedUnits, this.totalUnits, this.translating);
+  }
+
   private cache = new Map<string, string>();
   private spaObserver: MutationObserver | null = null;
+  private pendingIncremental = false;
   private spaDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   translating = false;
@@ -308,6 +334,7 @@ export class WufDomTranslator {
     this.translateBatchFn = options.translateBatch;
     this.getConfigFn = options.getConfig;
     this.onStateChange = options.onStateChange;
+    this.onProgress = options.onProgress;
   }
 
   abortInProgressTranslation(): void {
@@ -317,6 +344,7 @@ export class WufDomTranslator {
     }
     this.stopSpaObserver();
     this.translating = false;
+    this.reportProgress();
   }
 
   restorePage(): void {
@@ -329,9 +357,11 @@ export class WufDomTranslator {
     this.totalUnits = 0;
     this.completedUnits = 0;
     this.onStateChange?.(false);
+    this.reportProgress();
   }
 
   private stopSpaObserver(): void {
+    this.pendingIncremental = false;
     if (this.spaDebounceTimer) {
       clearTimeout(this.spaDebounceTimer);
       this.spaDebounceTimer = null;
@@ -369,7 +399,9 @@ export class WufDomTranslator {
         this.spaDebounceTimer = setTimeout(() => {
           this.spaDebounceTimer = null;
           if (this.translated && !this.translating) {
-            void this.translateIncremental();
+            void this.translateIncremental().catch(() => undefined);
+          } else if (this.translating) {
+            this.pendingIncremental = true;
           }
         }, 350);
       }
@@ -384,44 +416,11 @@ export class WufDomTranslator {
 
   private async translateIncremental(): Promise<void> {
     if (this.translating || !this.translated) return;
-    const cfg = await this.getConfigFn();
-    const allUnits = collectTranslatableUnits(this.root);
-    // Filter only untranslated units
-    const untranslated = allUnits.filter(
-      u => !u.element.hasAttribute('data-wuf-translated'),
-    );
-    if (untranslated.length === 0) return;
-
-    this.totalUnits += untranslated.length;
-    const batches = partitionWebpageBatches(untranslated, cfg.batchConfig);
-    const controller = new AbortController();
-
-    for (const batch of batches) {
-      const texts = batch.units.map(u => u.sourceText);
-      try {
-        const translations = await this.translateBatchFn(texts, controller.signal);
-        batch.units.forEach((u, idx) => {
-          const tr = translations[idx];
-          if (tr) {
-            applyTranslationToElement(
-              u.element,
-              u.sourceText,
-              tr,
-              cfg.displayMode,
-              this.doc,
-              u.tagsMap,
-            );
-          }
-        });
-        this.completedUnits += batch.units.length;
-      } catch {
-        // Fallback for failed incremental batch
-      }
-    }
+    await this.handleTranslatePreset({ translateOnly: true, force: true, incremental: true });
   }
 
   async handleTranslatePreset(
-    options: { translateOnly?: boolean; force?: boolean } = {},
+    options: { translateOnly?: boolean; force?: boolean; incremental?: boolean } = {},
   ): Promise<void> {
     if (this.translating) {
       if (options.translateOnly && options.force) {
@@ -439,16 +438,25 @@ export class WufDomTranslator {
     const controller = new AbortController();
     this.abortController = controller;
     this.translating = true;
+    if (!options.incremental) {
+      this.completedUnits = 0;
+      this.totalUnits = 0;
+    }
+    this.reportProgress();
 
     try {
       const cfg = await this.getConfigFn();
-      const units = collectTranslatableUnits(this.root);
+      if (controller.signal.aborted) return;
+      const units = collectTranslatableUnits(this.root).filter(u =>
+        !options.incremental || !u.element.hasAttribute('data-wuf-translated'));
       if (units.length === 0) {
         this.translating = false;
         return;
       }
-      this.totalUnits = units.length;
-      this.completedUnits = 0;
+      this.totalUnits = options.incremental ? this.totalUnits + units.length : units.length;
+      if (!options.incremental) this.completedUnits = 0;
+      this.startSpaObserver();
+      this.reportProgress();
 
       const batches = partitionWebpageBatches(units, cfg.batchConfig);
       const concurrency = Math.max(1, cfg.batchConfig.webConcurrency);
@@ -488,6 +496,9 @@ export class WufDomTranslator {
         }
 
         if (controller.signal.aborted) return;
+        if (resolved.some(text => !text?.trim())) {
+          throw new Error('翻譯服務回傳空白或不完整的譯文，請重試。');
+        }
         batch.units.forEach((u, idx) => {
           const tr = resolved[idx];
           if (tr) {
@@ -502,6 +513,7 @@ export class WufDomTranslator {
           }
         });
         this.completedUnits = Math.min(this.totalUnits, this.completedUnits + batch.units.length);
+        this.reportProgress();
       };
 
       // Run first screen batch immediately for fast visual feedback
@@ -524,12 +536,19 @@ export class WufDomTranslator {
       if (!controller.signal.aborted) {
         this.translated = true;
         this.onStateChange?.(true);
-        this.startSpaObserver();
       }
+    } catch (error) {
+      controller.abort();
+      throw error;
     } finally {
       if (this.abortController === controller) {
         this.abortController = null;
         this.translating = false;
+        this.reportProgress();
+        if (this.pendingIncremental && !controller.signal.aborted) {
+          this.pendingIncremental = false;
+          void this.translateIncremental().catch(() => undefined);
+        }
       }
     }
   }
