@@ -21,6 +21,7 @@ export const TRANSLATION_ENGINES = [
   'openai-compat-online',
   'openai-compat-local',
   'google-translate',
+  'microsoft-translate',
 ] as const;
 export type TranslationEngineId = (typeof TRANSLATION_ENGINES)[number];
 
@@ -169,6 +170,9 @@ export interface TranslationRequest {
   applyOpenCC?: boolean;
   openccVariant?: OpenCCVariant;
   subtitleContext?: import('./subtitle/translation-context.ts').SubtitleTranslationContext;
+  webpageContext?: string;
+  preservePlaceholders?: boolean;
+  wupageSession?: { id: string; documentKey: string };
 }
 
 export interface OpenCCConversionRequest {
@@ -214,7 +218,16 @@ export type RuntimeRequestMessage =
   | {
       type: 'wuf:translate-text';
       request: TranslationRequest;
+      requestId?: string;
     }
+  | {
+      type: 'wuf:wupage-translate';
+      request: TranslationRequest;
+      requestId?: string;
+      bypassCache?: boolean;
+    }
+  | { type: 'wuf:cancel-webpage-request'; requestId: string }
+  | { type: 'wuf:wupage-frame'; request: import('./vendor/wupage/shared/frame-session').FrameSessionRequest | { type: 'EXECUTE_TRANSLATION_SHORTCUT'; command: string } }
   | {
       type: 'wuf:convert-opencc';
       request: OpenCCConversionRequest;
@@ -282,6 +295,7 @@ export type RuntimeResponseMessage<T = unknown> =
       error: {
         code: string;
         message: string;
+        retryAfterMs?: number;
         status?: number;
       };
     };

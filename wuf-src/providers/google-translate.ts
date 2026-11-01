@@ -68,6 +68,16 @@ export async function translateWithGoogle(
 
   const results: string[] = [];
   for (const text of texts) {
+    // Google can translate or truncate our DOM placeholders. Keep them out of
+    // the request and translate only the prose between them.
+    const pieces = text.split(/(<<<WUF_(?:TAG|END)_\d+>>>|⟪WUPAGE\d+⟫)/g);
+    if (pieces.length > 1) {
+      const prose = pieces.filter((_, index) => index % 2 === 0);
+      const translated = await translateWithGoogle({ ...options, texts: prose });
+      let cursor = 0;
+      results.push(pieces.map((piece, index) => index % 2 ? piece : translated[cursor++]).join(''));
+      continue;
+    }
     if (!text.trim()) {
       results.push(text);
       continue;

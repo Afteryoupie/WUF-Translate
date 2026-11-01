@@ -20,7 +20,7 @@ import {
   switchLocalModel,
 } from '../lib/watchdog-client.ts';
 import { refreshPageContextMenu, registerPageContextMenus } from '../lib/page-context-menu.ts';
-import { globalCacheManager } from '../lib/cache-manager.ts';
+import { computeCacheKey, globalCacheManager } from '../lib/cache-manager.ts';
 import { WufProviderError } from '../providers/errors.ts';
 import { executeTranslation } from '../providers/index.ts';
 import { translateWithOpenCC } from '../providers/opencc.ts';
@@ -28,8 +28,21 @@ import { LayaDecisionEngine } from '../subtitle/decision-engine.ts';
 import { runSubtitleDecisionPipeline } from '../subtitle/subtitle-decisions.ts';
 import { resolvePresetProvider } from '../lib/provider-profiles.ts';
 import { sanitizeSubtitleContext, subtitleContextPrompt, type SubtitleTopicDecision } from '../subtitle/translation-context.ts';
+import { FrameSessionManager } from '../vendor/wupage/background/frame-sessions';
+import { ProviderError } from '../vendor/wupage/shared/errors';
+import { toWuPageError } from '../webpage/wupage-errors.ts';
+import { translateWuPage } from '../webpage/wupage-background.ts';
+import { CACHE_PREFIX as WUPAGE_CACHE_PREFIX } from '../vendor/wupage/core/shared/defaults';
+import { ProviderError as WuPageCoreProviderError } from '../vendor/wupage/core/shared/errors';
+
+let wupageFrames: FrameSessionManager | undefined;
+function getWuPageFrames(): FrameSessionManager {
+  if (!wupageFrames) { wupageFrames = new FrameSessionManager(); wupageFrames.install(); }
+  return wupageFrames;
+}
 
 const subtitleTopics = new Map<string, Promise<SubtitleTopicDecision>>();
+const webpageRequests = new Map<string, AbortController>();
 
 const stickyTabs = new Set<number>();
 let _stickyHydratingPromise: Promise<void> | null = null;
@@ -70,6 +83,41 @@ export async function handleRuntimeMessage(
   message: RuntimeRequestMessage,
   sender?: chrome.runtime.MessageSender,
 ): Promise<RuntimeResponseMessage> {
+  if (!message || typeof message !== 'object' || typeof message.type !== 'string') return handleMessage(message, sender);
+  const key = message && typeof message === 'object' && 'requestId' in message && message.requestId
+    ? JSON.stringify([sender?.tab?.id, sender?.frameId, sender?.documentId, message.requestId]) : undefined;
+  if (message.type === 'wuf:cancel-webpage-request') {
+    if (key) webpageRequests.get(key)?.abort();
+    return { ok: true, data: {} };
+  }
+  if (!((message.type === 'wuf:translate-text' && message.request.purpose === 'webpage')
+    || message.type === 'wuf:wupage-translate') || !key) {
+    return handleMessage(message, sender);
+  }
+  const controller = new AbortController();
+  webpageRequests.set(key, controller);
+  try {
+    if (message.request.wupageSession && sender) {
+      return await getWuPageFrames().translate({ texts: message.request.texts, targetLang: message.request.targetLanguage,
+        pageSession: message.request.wupageSession }, sender, async signal => {
+        const response = await handleMessage(message, sender, signal ? AbortSignal.any([signal, controller.signal]) : controller.signal);
+        if (!response.ok) throw toWuPageError(response.error);
+        return response;
+      });
+    }
+    return await handleMessage(message, sender, controller.signal);
+  } catch (error) {
+    if (error instanceof ProviderError) return { ok: false, error: { code: error.errorCode, message: error.message, retryAfterMs: error.retryAfterMs } };
+    throw error;
+  }
+  finally { if (webpageRequests.get(key) === controller) webpageRequests.delete(key); }
+}
+
+async function handleMessage(
+  message: RuntimeRequestMessage,
+  sender?: chrome.runtime.MessageSender,
+  signal?: AbortSignal,
+): Promise<RuntimeResponseMessage> {
   try {
     if (!message || typeof message !== 'object' || typeof message.type !== 'string') {
       return {
@@ -82,6 +130,11 @@ export async function handleRuntimeMessage(
     }
 
     switch (message.type) {
+      case 'wuf:wupage-frame': {
+        if (!sender) throw new Error('Frame requests require a browser sender.');
+        if (message.request.type === 'EXECUTE_TRANSLATION_SHORTCUT') throw new Error('Unsupported frame shortcut.');
+        return { ok: true, data: await getWuPageFrames().handle(message.request, sender) };
+      }
       case 'wuf:get-settings': {
         const snapshot = await loadSettingsSnapshot();
         return { ok: true, data: snapshot };
@@ -139,6 +192,12 @@ export async function handleRuntimeMessage(
         return { ok: true, data: probe };
       }
 
+      case 'wuf:wupage-translate': {
+        const [saved, secrets] = await Promise.all([loadSavedSettings(), loadLocalSecrets()]);
+        signal?.throwIfAborted();
+        return { ok: true, data: await translateWuPage(message.request, saved, secrets, signal, message.bypassCache) };
+      }
+
       case 'wuf:translate-text': {
         const [saved, secrets] = await Promise.all([
           loadSavedSettings(),
@@ -146,6 +205,7 @@ export async function handleRuntimeMessage(
         ]);
 
         const req = message.request;
+        signal?.throwIfAborted();
         if (req.purpose === 'subtitle') {
           const context = sanitizeSubtitleContext(req.subtitleContext);
           let contextDecision: SubtitleTopicDecision | undefined;
@@ -220,6 +280,15 @@ export async function handleRuntimeMessage(
             contextDecision,
           } };
         }
+        // Page cache identity must reflect the effective provider, not only the
+        // engine name or an optional model override. Keep subtitle behavior.
+        const pageProvider = req.purpose === 'webpage' && req.engine !== 'google-translate'
+          ? resolvePresetProvider(saved, secrets, 'webpage', req.engine, req.modelOverride) : undefined;
+        const cacheModel = req.purpose === 'webpage' ? await computeCacheKey({
+          engine: req.engine, targetLang: req.targetLanguage,
+          text: JSON.stringify({ version: 3, protocol: req.preservePlaceholders ? 'wupage-1.5.5' : 'wuf', provider: pageProvider ? { ...pageProvider, apiKey: undefined } : 'google',
+            context: req.webpageContext, opencc: [req.applyOpenCC ?? saved.openccEnabled, req.openccVariant ?? saved.openccVariant] }),
+        }) : req.modelOverride;
         // Fast-path single text cache lookup
         if (req.texts.length === 1 && req.texts[0].trim()) {
           const cached = await globalCacheManager.get({
@@ -227,7 +296,7 @@ export async function handleRuntimeMessage(
             sourceLang: 'auto',
             targetLang: req.targetLanguage,
             engine: req.engine,
-            model: req.modelOverride,
+            model: cacheModel,
           });
           if (cached !== null) {
             return {
@@ -245,7 +314,9 @@ export async function handleRuntimeMessage(
           message.request,
           saved,
           secrets,
+          { signal },
         );
+        signal?.throwIfAborted();
 
         // Populate cache asynchronously
         if (response.translations.length === req.texts.length) {
@@ -259,7 +330,7 @@ export async function handleRuntimeMessage(
                 sourceLang: 'auto',
                 targetLang: req.targetLanguage,
                 engine: req.engine,
-                model: response.effectiveModel || req.modelOverride,
+                model: req.purpose === 'webpage' ? cacheModel : response.effectiveModel || req.modelOverride,
               });
             }
           }
@@ -359,7 +430,7 @@ export async function handleRuntimeMessage(
         let count = 0;
         let bytes = 0;
         for (const [k, v] of Object.entries(local)) {
-          if (k.startsWith('wuf:cache:') || k.startsWith('tr:')) {
+          if (k.startsWith('wuf:cache:') || k.startsWith('tr:') || k.startsWith(WUPAGE_CACHE_PREFIX)) {
             count++;
             bytes += JSON.stringify(v).length;
           }
@@ -380,7 +451,7 @@ export async function handleRuntimeMessage(
         await globalCacheManager.clear();
         const local = (await globalThis.chrome?.storage?.local?.get(null)) || {};
         const keysToRemove = Object.keys(local).filter(
-          k => k.startsWith('wuf:cache:') || k.startsWith('tr:'),
+          k => k.startsWith('wuf:cache:') || k.startsWith('tr:') || k.startsWith(WUPAGE_CACHE_PREFIX),
         );
         if (keysToRemove.length > 0 && globalThis.chrome?.storage?.local?.remove) {
           await globalThis.chrome.storage.local.remove(keysToRemove);
@@ -395,6 +466,16 @@ export async function handleRuntimeMessage(
         }
         await hydrateStickyTabs();
         const tabId = sender?.tab?.id;
+        const openerTabId = sender?.tab?.openerTabId;
+        if (
+          tabId != null &&
+          !stickyTabs.has(tabId) &&
+          openerTabId != null &&
+          stickyTabs.has(openerTabId)
+        ) {
+          stickyTabs.add(tabId);
+          await persistStickyTabs();
+        }
         const shouldTranslate = tabId != null ? stickyTabs.has(tabId) : false;
         return { ok: true, data: { shouldTranslate } };
       }
@@ -430,6 +511,9 @@ export async function handleRuntimeMessage(
       }
     }
   } catch (err) {
+    if (err instanceof WuPageCoreProviderError) {
+      return { ok: false, error: { code: err.errorCode, message: err.message, retryAfterMs: err.retryAfterMs } };
+    }
     if (err instanceof WufProviderError) {
       return {
         ok: false,
@@ -478,23 +562,32 @@ export function registerBackgroundListeners(): void {
 }
 
 export function registerWebNavigationListeners(): void {
+  const propagateStickyTab = async (sourceTabId?: number, newTabId?: number) => {
+    try {
+      if (sourceTabId == null || newTabId == null) return;
+      const saved = await loadSavedSettings();
+      if (saved.webpage.crossTabSticky !== true) return;
+      await hydrateStickyTabs();
+      if (stickyTabs.has(sourceTabId)) {
+        stickyTabs.add(newTabId);
+        await persistStickyTabs();
+      }
+    } catch {
+      // ignore
+    }
+  };
+
   const onCreatedNavTarget = globalThis.chrome?.webNavigation?.onCreatedNavigationTarget;
   if (onCreatedNavTarget?.addListener) {
-    onCreatedNavTarget.addListener(async (details) => {
-      try {
-        const saved = await loadSavedSettings();
-        if (saved.webpage.crossTabSticky !== true) return;
-        await hydrateStickyTabs();
-        const sourceTabId = details.sourceTabId;
-        const newTabId = details.tabId;
-        if (sourceTabId == null || newTabId == null) return;
-        if (stickyTabs.has(sourceTabId)) {
-          stickyTabs.add(newTabId);
-          await persistStickyTabs();
-        }
-      } catch {
-        // ignore
-      }
+    onCreatedNavTarget.addListener((details) => {
+      void propagateStickyTab(details.sourceTabId, details.tabId);
+    });
+  }
+
+  const onTabCreated = globalThis.chrome?.tabs?.onCreated;
+  if (onTabCreated?.addListener) {
+    onTabCreated.addListener((tab) => {
+      void propagateStickyTab(tab?.openerTabId, tab?.id);
     });
   }
 

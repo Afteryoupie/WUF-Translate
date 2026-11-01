@@ -159,11 +159,12 @@ export async function initOptionsPage(): Promise<void> {
   const root = document.getElementById('wuf-options-root');
   if (!root) return;
 
-  bindOptionsTabs(root);
+  const tabs = bindOptionsTabs(root);
 
   let currentLocale: UiLocale = 'zh-TW';
   let currentSnapshot: SettingsSnapshotPayload | null = null;
   let isHydrating = false;
+  let webpageSitesDirty = false;
 
   const localeEl = getSelect('wuf-opt-locale');
   const themeEl = getSelect('wuf-opt-theme');
@@ -208,6 +209,13 @@ export async function initOptionsPage(): Promise<void> {
   const webpageDisplayMode = getSelect('wuf-webpage-display-mode');
   const webpageModelOverride = getInput('wuf-webpage-model-override');
   const webpageCrossTabSticky = getInput('wuf-webpage-cross-tab-sticky');
+  const webpageAutoHosts = getTextArea('wuf-webpage-auto-hosts');
+  const webpageAutoHostsSave = document.getElementById('wuf-webpage-auto-hosts-save') as HTMLButtonElement;
+  const webpageAutoHostsFeedback = document.getElementById('wuf-webpage-auto-hosts-feedback') as HTMLElement;
+  const webpageTest = document.getElementById('wuf-webpage-test') as HTMLButtonElement;
+  const webpageTestResult = document.getElementById('wuf-webpage-test-result') as HTMLElement;
+  document.getElementById('wuf-webpage-open-local')?.addEventListener('click', () => tabs.switchTab('local', true));
+  document.getElementById('wuf-webpage-open-online')?.addEventListener('click', () => tabs.switchTab('online', true));
 
   const subtitleEngine = getSelect('wuf-subtitle-engine');
   const subtitleTargetLang = getInput('wuf-subtitle-target-lang');
@@ -358,6 +366,8 @@ export async function initOptionsPage(): Promise<void> {
       webpageTargetLang.value = saved.webpage.targetLanguage;
       webpageDisplayMode.value = saved.webpage.displayMode;
       webpageModelOverride.value = saved.webpage.customModelOverride;
+      webpageAutoHosts.value = saved.webpage.autoTranslateHosts.join('\n');
+      webpageSitesDirty = false;
       if (webpageCrossTabSticky) {
         webpageCrossTabSticky.checked = saved.webpage.crossTabSticky === true;
       }
@@ -401,7 +411,9 @@ export async function initOptionsPage(): Promise<void> {
 
   const collectAndAutoSave = async () => {
     if (isHydrating || !currentSnapshot) return;
-    const prev = currentSnapshot.savedSettings;
+    const latest = await sendWufRuntimeMessage<SettingsSnapshotPayload>({ type: 'wuf:get-settings' });
+    if (!latest.ok) return;
+    const prev = latest.data.savedSettings;
     const nextLocale = resolveUiLocale(localeEl.value);
     const nextTheme = (themeEl.value as ThemeMode) || 'system';
     applyThemeMode(nextTheme);
@@ -541,7 +553,7 @@ export async function initOptionsPage(): Promise<void> {
   };
 
   const formControls = root.querySelectorAll<HTMLElement>(
-    'input:not(#wuf-json-transfer-box), select, textarea:not(#wuf-json-transfer-box)',
+    'input:not(#wuf-json-transfer-box), select, textarea:not(#wuf-json-transfer-box):not(#wuf-webpage-auto-hosts)',
   );
   for (const el of formControls) {
     el.addEventListener('change', () => {
@@ -553,6 +565,76 @@ export async function initOptionsPage(): Promise<void> {
       });
     }
   }
+
+  webpageAutoHosts.addEventListener('input', () => {
+    webpageSitesDirty = true;
+    webpageAutoHosts.removeAttribute('aria-invalid');
+    delete webpageAutoHostsFeedback.dataset.state;
+    webpageAutoHostsFeedback.textContent = '';
+  });
+  globalThis.chrome?.storage?.onChanged?.addListener((changes, area) => {
+    if (area !== 'sync' || webpageSitesDirty) return;
+    const hosts = (changes.wufSettings?.newValue as WufSettings | undefined)?.webpage?.autoTranslateHosts;
+    if (Array.isArray(hosts)) webpageAutoHosts.value = hosts.join('\n');
+  });
+
+  webpageAutoHostsSave.addEventListener('click', async () => {
+    const hosts: string[] = [];
+    try {
+      for (const input of webpageAutoHosts.value.split(/\r?\n/).map(line => line.trim()).filter(Boolean)) {
+        const hasScheme = /^[a-z][a-z\d+.-]*:\/\//i.test(input);
+        const url = new URL(hasScheme ? input : `https://${input}`);
+        if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password ||
+          !/^(?:[a-z0-9._-]+|\[[a-f\d:.]+\])$/i.test(url.hostname) ||
+          (!hasScheme && (url.pathname !== '/' || url.search || url.hash))) throw new Error('Invalid website');
+        if (!hosts.includes(url.hostname.toLowerCase())) hosts.push(url.hostname.toLowerCase());
+      }
+    } catch {
+      webpageAutoHosts.setAttribute('aria-invalid', 'true');
+      webpageAutoHostsFeedback.dataset.state = 'error';
+      webpageAutoHostsFeedback.textContent = t(currentLocale, 'options.webpageSitesInvalid');
+      return;
+    }
+    webpageAutoHostsSave.disabled = true;
+    webpageAutoHosts.disabled = true;
+    try {
+      const latest = await sendWufRuntimeMessage<SettingsSnapshotPayload>({ type: 'wuf:get-settings' });
+      if (!latest.ok) throw new Error(latest.error.message);
+      const response = await sendWufRuntimeMessage<SettingsSnapshotPayload>({ type: 'wuf:save-settings',
+        settings: { webpage: { ...latest.data.savedSettings.webpage, autoTranslateHosts: hosts } } });
+      if (!response.ok) throw new Error(response.error.message);
+      currentSnapshot = response.data;
+      webpageAutoHosts.value = response.data.savedSettings.webpage.autoTranslateHosts.join('\n');
+      webpageSitesDirty = false;
+      webpageAutoHosts.removeAttribute('aria-invalid');
+      webpageAutoHostsFeedback.dataset.state = 'success';
+      webpageAutoHostsFeedback.textContent = t(currentLocale, 'options.webpageSitesSaved');
+    } catch (error) {
+      webpageAutoHostsFeedback.dataset.state = 'error';
+      webpageAutoHostsFeedback.textContent = error instanceof Error ? error.message : String(error);
+    } finally { webpageAutoHostsSave.disabled = false; webpageAutoHosts.disabled = false; }
+  });
+
+  webpageTest.addEventListener('click', async () => {
+    webpageTest.disabled = true;
+    webpageTestResult.hidden = false;
+    webpageTestResult.className = 'wuf-test-result testing';
+    webpageTestResult.textContent = t(currentLocale, 'options.testingModel');
+    try {
+      const response = await sendWufRuntimeMessage<{ translations: string[] }>({ type: 'wuf:wupage-translate', bypassCache: true,
+        request: { texts: ['Hello world'], sourceLanguage: 'auto', targetLanguage: webpageTargetLang.value.trim() || 'zh-TW',
+          engine: webpageEngine.value as TranslationEngineId, purpose: 'webpage', preservePlaceholders: true,
+          modelOverride: webpageModelOverride.value.trim() || undefined } });
+      if (!response.ok) throw new Error(response.error.message);
+      const translation = response.data.translations[0];
+      if (!translation) throw new Error('Empty response');
+      webpageTestResult.className = 'wuf-test-result success';
+      webpageTestResult.textContent = `${t(currentLocale, 'options.testSuccess')}: ${translation}`;
+    } catch (error) {
+      webpageTestResult.className = 'wuf-test-result error';
+      webpageTestResult.textContent = `${t(currentLocale, 'options.testFailed')}: ${error instanceof Error ? error.message : String(error)}`;
+    } finally { webpageTest.disabled = false; }
+  });
 
   exportBtn.addEventListener('click', async () => {
     const resp = await sendWufRuntimeMessage<WufSettings>({

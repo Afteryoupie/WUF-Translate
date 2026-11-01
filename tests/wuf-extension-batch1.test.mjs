@@ -352,7 +352,7 @@ test('Options HTML and controller implement a 6-tab layout separating Webpage an
   );
   assert.deepEqual(
     [...TRANSLATION_ENGINES],
-    ['openai-compat-online', 'openai-compat-local', 'google-translate'],
+    ['openai-compat-online', 'openai-compat-local', 'google-translate', 'microsoft-translate'],
   );
   assert.deepEqual([...SUBTITLE_DECISION_MODES], ['laya', 'custom', 'off']);
   assert.doesNotMatch(optionsHtml, /<option\s+value="opencc"/);

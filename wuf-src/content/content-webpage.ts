@@ -2,9 +2,13 @@ import type { SettingsSnapshotPayload, TranslationResponse } from '../types.ts';
 import { resolvePerformanceConfig } from '../lib/provider-performance.ts';
 import { sendWufRuntimeMessage } from '../lib/runtime-client.ts';
 import { WufDomTranslator } from '../webpage/dom-translator.ts';
+import { WufWuPageTranslator } from '../webpage/wupage-adapter.ts';
 
-let pageTranslator: WufDomTranslator | null = null;
+let pageTranslator: WufDomTranslator | WufWuPageTranslator | null = null;
 let isEditing = false;
+let navigationVersion = 0;
+let suppressStickyClear = false;
+const preserveYouTube = /(^|\.)youtube\.com$/i.test(location.hostname);
 
 let progressHost: HTMLDivElement | null = null;
 let progressLabel: HTMLDivElement | null = null;
@@ -42,8 +46,17 @@ function showTranslationProgress(completed: number, total: number, active: boole
   }
 }
 
-function ensureTranslator(): WufDomTranslator {
+function ensureTranslator(): WufDomTranslator | WufWuPageTranslator {
   if (pageTranslator) return pageTranslator;
+  if (!preserveYouTube) {
+    pageTranslator = new WufWuPageTranslator({ onProgress: showTranslationProgress,
+      onStateChange: translated => {
+        void sendWufRuntimeMessage({ type: 'wuf:set-page-translated', translated }).catch(() => {});
+        if (translated) void sendWufRuntimeMessage({ type: 'wuf:sticky-set' }).catch(() => {});
+        else if (!suppressStickyClear) void sendWufRuntimeMessage({ type: 'wuf:sticky-clear' }).catch(() => {});
+      } });
+    return pageTranslator;
+  }
   pageTranslator = new WufDomTranslator({
     // Keep YouTube's endless recommendation feed out of the comment queue.
     root: document.querySelector('ytd-watch-flexy #primary') || document.body,
@@ -56,7 +69,7 @@ function ensureTranslator(): WufDomTranslator {
       }).catch(() => {});
       if (translated) {
         void sendWufRuntimeMessage({ type: 'wuf:sticky-set' }).catch(() => {});
-      } else {
+      } else if (!suppressStickyClear) {
         void sendWufRuntimeMessage({ type: 'wuf:sticky-clear' }).catch(() => {});
       }
     },
@@ -84,9 +97,9 @@ function ensureTranslator(): WufDomTranslator {
         resp.data.webpageProvider.profileType,
       );
       // Local translation models often do not preserve multi-item delimiters.
-      // One item per request also lets each comment appear as soon as it is ready.
-      if (location.hostname.endsWith('youtube.com') && wp.engine === 'openai-compat-local') {
-        batchConfig.webConcurrency = 1;
+      // Use the same safe request size for articles and outlines as for comments.
+      if (wp.engine === 'openai-compat-local' || wp.engine === 'google-translate') {
+        batchConfig.webConcurrency = wp.engine === 'google-translate' ? 3 : 1;
         batchConfig.webBatchUnits = 1;
         batchConfig.firstBatchUnits = 1;
       }
@@ -95,33 +108,19 @@ function ensureTranslator(): WufDomTranslator {
         targetLanguage: wp.targetLanguage,
         displayMode: wp.displayMode,
         batchConfig,
+
       };
     },
     translateBatch: async (texts, _signal) => {
-      const snapResp = await sendWufRuntimeMessage<SettingsSnapshotPayload>({
-        type: 'wuf:get-settings',
-      });
-      const wp = snapResp.ok
-        ? snapResp.data.runtimeSettings.webpage
-        : {
-            engine: 'openai-compat-local' as const,
-            targetLanguage: 'zh-TW',
-            customModelOverride: '',
-          };
-      const trResp = await sendWufRuntimeMessage<TranslationResponse>({
-        type: 'wuf:translate-text',
-        request: {
-          texts,
-          targetLanguage: wp.targetLanguage,
-          engine: wp.engine,
-          purpose: 'webpage',
-          modelOverride: wp.customModelOverride || undefined,
-        },
-      });
-      if (!trResp.ok) {
-        throw new Error(trResp.error.message);
-      }
-      return trResp.data.translations;
+      const snapshot = await sendWufRuntimeMessage<SettingsSnapshotPayload>({ type: 'wuf:get-settings' });
+      const preset = snapshot.ok ? snapshot.data.runtimeSettings.webpage
+        : { engine: 'openai-compat-local' as const, targetLanguage: 'zh-TW', customModelOverride: '' };
+      const response = await sendWufRuntimeMessage<TranslationResponse>({ type: 'wuf:translate-text', request: {
+        texts, targetLanguage: preset.targetLanguage, engine: preset.engine, purpose: 'webpage',
+        modelOverride: preset.customModelOverride || undefined,
+      } });
+      if (!response.ok) throw new Error(response.error.message);
+      return response.data.translations;
     },
   });
   return pageTranslator;
@@ -129,6 +128,9 @@ function ensureTranslator(): WufDomTranslator {
 
 if (typeof globalThis.chrome !== 'undefined' && globalThis.chrome?.runtime?.onMessage) {
   globalThis.chrome.runtime.onMessage.addListener((msg: unknown, _sender, sendResponse) => {
+    // Whole-page controls belong to the top document; child documents receive
+    // WuPage's browser-identified FRAME_* commands instead.
+    if (window !== window.top) return false;
     if (!msg || typeof msg !== 'object') return false;
     const type = (msg as { type?: string }).type;
     if (type === 'wuf:translate-page') {
@@ -157,6 +159,7 @@ if (typeof globalThis.chrome !== 'undefined' && globalThis.chrome?.runtime?.onMe
         translated: tr.translated,
         translating: tr.translating,
         editing: isEditing,
+        ...(tr instanceof WufWuPageTranslator ? { error: tr.error, errorCode: tr.errorCode, retryAt: tr.retryAt } : {}),
         progress: {
           completedUnits: tr.completedUnits,
           totalUnits: tr.totalUnits,
@@ -167,10 +170,11 @@ if (typeof globalThis.chrome !== 'undefined' && globalThis.chrome?.runtime?.onMe
     if (type === 'wuf:toggle-edit') {
       isEditing = !isEditing;
       const targets = document.querySelectorAll<HTMLElement>(
-        '.wuf-bilingual-translation, [data-wuf-injected="true"]',
+        '.wuf-bilingual-translation, [data-wuf-injected="true"], .wupage-translation',
       );
       for (const el of targets) {
         el.contentEditable = isEditing ? 'true' : 'inherit';
+        if (el.classList.contains('wupage-translation')) el.style.pointerEvents = isEditing ? 'auto' : '';
         el.style.outline = isEditing ? '1px dashed #007AFF' : '';
       }
       sendResponse({ ok: true, editing: isEditing });
@@ -180,9 +184,10 @@ if (typeof globalThis.chrome !== 'undefined' && globalThis.chrome?.runtime?.onMe
   });
 }
 
-async function maybeAutoTranslate(): Promise<void> {
+async function maybeAutoTranslate(isSpaNavigation = false): Promise<void> {
+  const version = navigationVersion;
   const resp = await sendWufRuntimeMessage<SettingsSnapshotPayload>({ type: 'wuf:get-settings' });
-  if (!resp.ok) return;
+  if (!resp.ok || version !== navigationVersion) return;
   const hosts = resp.data.runtimeSettings.webpage.autoTranslateHosts || [];
   if (hosts.includes(location.hostname.toLowerCase())) {
     await ensureTranslator().handleTranslatePreset({ translateOnly: true, force: true });
@@ -190,13 +195,15 @@ async function maybeAutoTranslate(): Promise<void> {
   }
 
   let navType: string | null = null;
-  try {
-    const navEntries = performance.getEntriesByType('navigation');
-    if (navEntries.length > 0) {
-      navType = (navEntries[0] as PerformanceNavigationTiming).type;
+  if (!isSpaNavigation) {
+    try {
+      const navEntries = performance.getEntriesByType('navigation');
+      if (navEntries.length > 0) {
+        navType = (navEntries[0] as PerformanceNavigationTiming).type;
+      }
+    } catch {
+      // ignore
     }
-  } catch {
-    // ignore
   }
 
   if (navType === 'reload') {
@@ -205,7 +212,7 @@ async function maybeAutoTranslate(): Promise<void> {
     const stickyResp = await sendWufRuntimeMessage<{ shouldTranslate: boolean }>({
       type: 'wuf:sticky-query',
     }).catch(() => null);
-    if (stickyResp?.ok && stickyResp.data?.shouldTranslate) {
+    if (version === navigationVersion && stickyResp?.ok && stickyResp.data?.shouldTranslate) {
       await ensureTranslator().handleTranslatePreset({ translateOnly: true, force: true });
     }
   }
@@ -213,4 +220,60 @@ async function maybeAutoTranslate(): Promise<void> {
 
 if (typeof globalThis.chrome !== 'undefined' && globalThis.chrome?.runtime?.onMessage && window.top === window) {
   void maybeAutoTranslate().catch(() => undefined);
+}
+
+if (!preserveYouTube) {
+  if (window !== window.top) ensureTranslator();
+  let resumeAfterRestore = false;
+  window.addEventListener('pagehide', () => {
+    navigationVersion++;
+    resumeAfterRestore = Boolean(pageTranslator?.translated || pageTranslator?.translating);
+    // Lifecycle teardown is not a user's request to disable cross-tab translation.
+    // Keep the guard in place through asynchronous coordinator shutdown.
+    suppressStickyClear = true;
+    pageTranslator?.abortInProgressTranslation();
+  });
+  window.addEventListener('pageshow', event => {
+    suppressStickyClear = false;
+    if (event.persisted && resumeAfterRestore) {
+      void ensureTranslator().handleTranslatePreset({ translateOnly: true, force: true }).catch(() => undefined);
+    }
+  });
+}
+
+// YouTube keeps the document and often the title element when opening a video.
+// Tear down the old observer before mutations arrive, then bind a fresh root.
+if (window.top === window && /(^|\.)youtube\.com$/.test(location.hostname)) {
+  const pageKey = () => {
+    const url = new URL(location.href);
+    return url.pathname + ':' + (url.searchParams.get('v') || '');
+  };
+  let lastPage = pageKey();
+  let navigating = false;
+  const reset = () => {
+    navigationVersion++;
+    suppressStickyClear = true;
+    try {
+      pageTranslator?.restorePage();
+    } finally {
+      suppressStickyClear = false;
+    }
+    pageTranslator = null;
+    isEditing = false;
+    showTranslationProgress(0, 0, false);
+  };
+  window.addEventListener('yt-navigate-start', () => {
+    navigating = true;
+    reset();
+  });
+  const finish = () => {
+    const next = pageKey();
+    if (!navigating && next === lastPage) return;
+    reset();
+    navigating = false;
+    lastPage = next;
+    void maybeAutoTranslate(true).catch(() => undefined);
+  };
+  window.addEventListener('yt-navigate-finish', finish);
+  window.addEventListener('popstate', finish);
 }

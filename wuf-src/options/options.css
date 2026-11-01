@@ -221,6 +221,9 @@
   overflow-wrap: anywhere;
   margin: 0;
 }
+.wuf-hint[data-state='error'] {
+  color: var(--wuf-danger);
+}
 .wuf-note  {
   padding: 12px 16px;
   border-radius: 6px;

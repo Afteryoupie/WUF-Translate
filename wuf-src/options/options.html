@@ -195,6 +195,7 @@
                   <option value="openai-compat-local" data-wuf-i18n="engine.openaiCompatLocal"></option>
                   <option value="openai-compat-online" data-wuf-i18n="engine.openaiCompatOnline"></option>
                   <option value="google-translate" data-wuf-i18n="engine.googleTranslate"></option>
+                  <option value="microsoft-translate">Microsoft Translator</option>
                 </select>
               </label>
               <label class="wuf-field">
@@ -225,6 +226,26 @@
                 預設關閉。關閉後僅手動翻譯當前分頁，新開啟的分頁不會自動跟著翻譯，避免連續開分頁時吃光本機 LLM 資源。
               </p>
             </div>
+            <p class="wuf-hint" data-wuf-i18n="options.webpageSourceHint">來源語言自動偵測。一般網頁使用 WuPage 的批次與請求預設。</p>
+            <div class="wuf-inline-buttons">
+              <button type="button" id="wuf-webpage-open-local" class="wuf-btn wuf-btn-secondary" data-wuf-i18n="options.tab.local">本機自訂模型</button>
+              <button type="button" id="wuf-webpage-open-online" class="wuf-btn wuf-btn-secondary" data-wuf-i18n="options.tab.online">線上自訂模型</button>
+              <button type="button" id="wuf-webpage-test" class="wuf-btn wuf-btn-secondary" data-wuf-i18n="options.webpageTest">測試網頁翻譯服務</button>
+            </div>
+            <p class="wuf-hint" data-wuf-i18n="options.webpageTestHint">測試會發送一筆翻譯請求，可能使用服務額度。</p>
+            <div id="wuf-webpage-test-result" class="wuf-test-result" role="status" aria-live="polite" hidden></div>
+          </div>
+        </section>
+        <section class="wuf-section">
+          <h3 data-wuf-i18n="options.webpageSitesTitle">自動翻譯網站</h3>
+          <div class="wuf-form-stack">
+            <label class="wuf-field">
+              <span data-wuf-i18n="options.webpageSitesLabel">網站清單</span>
+              <textarea id="wuf-webpage-auto-hosts" rows="5" spellcheck="false" aria-describedby="wuf-webpage-auto-hosts-hint"></textarea>
+            </label>
+            <p id="wuf-webpage-auto-hosts-hint" class="wuf-hint" data-wuf-i18n="options.webpageSitesHint">每行輸入一個網域或完整網址；僅比對相同網域，留空可清除清單。</p>
+            <div class="wuf-inline-buttons"><button type="button" id="wuf-webpage-auto-hosts-save" class="wuf-btn wuf-btn-secondary" data-wuf-i18n="common.save">儲存</button></div>
+            <p id="wuf-webpage-auto-hosts-feedback" class="wuf-hint" role="status" aria-live="polite"></p>
           </div>
         </section>
       </div>

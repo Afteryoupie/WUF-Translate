@@ -234,6 +234,70 @@ test('Empty translation results cannot report completion', async () => {
   assert.equal(translator.completedUnits, 0);
 });
 
+test('A failed paragraph does not prevent later paragraphs from translating', async () => {
+  const { WufDomTranslator } = await import('../dist/wuf/index.js');
+  const nodes = ['First', 'Failed', 'Conclusion'].map(text => new MockElement('P', text));
+  const translator = new WufDomTranslator({
+    root: { querySelectorAll: () => nodes }, doc: new MockDocument(),
+    getConfig: async () => ({ engine: 'google-translate', targetLanguage: 'zh-TW', displayMode: 'bilingual',
+      batchConfig: { webConcurrency: 1, webBatchUnits: 1, webBatchChars: 1000, firstBatchUnits: 1, firstBatchChars: 1000 } }),
+    translateBatch: async ([text]) => {
+      if (text === 'Failed') throw new Error('request failed');
+      return ['中文正文'];
+    },
+  });
+  await assert.rejects(translator.handleTranslatePreset(), /request failed/);
+  assert.equal(nodes[2].querySelector('.wuf-bilingual-translation').textContent, '中文正文');
+  assert.equal(nodes[1].hasAttribute('data-wuf-translated'), false);
+  assert.equal(translator.completedUnits, 2);
+  assert.equal(translator.totalUnits, 3);
+  assert.equal(translator.translating, false);
+});
+
+test('ScienceDirect abstract and body div paragraphs enter the translation queue', async () => {
+  const { collectTranslatableUnits } = await import('../dist/wuf/index.js');
+  const abstract = new MockElement('DIV', 'Abstract prose');
+  const paragraph = new MockElement('DIV', 'Introduction prose');
+  const root = { querySelectorAll(selector) {
+    const nodes = [];
+    if (selector.includes('div.u-margin-s-bottom[id^="abspara"]')) nodes.push(abstract);
+    if (selector.includes('div.u-margin-s-bottom[id^="p"]')) nodes.push(paragraph);
+    return nodes;
+  } };
+  assert.deepEqual(collectTranslatableUnits(root).map(unit => unit.sourceText),
+    ['Abstract prose', 'Introduction prose']);
+});
+
+test('Idle incremental checks leave completion progress alone; new comments resume progress', async () => {
+  const { WufDomTranslator } = await import('../dist/wuf/index.js');
+  const nodes = [new MockElement('P', 'First comment')];
+  const progress = [];
+  const requests = [];
+  const translator = new WufDomTranslator({
+    root: { querySelectorAll: () => nodes }, doc: new MockDocument(),
+    getConfig: async () => ({ engine: 'google', targetLanguage: 'zh-TW', displayMode: 'bilingual',
+      batchConfig: { webConcurrency: 1, webBatchUnits: 10, webBatchChars: 1000, firstBatchUnits: 10, firstBatchChars: 1000 } }),
+    translateBatch: async texts => { requests.push(texts); return texts.map(() => '翻譯留言'); },
+    onProgress: (...args) => progress.push(args),
+  });
+  await translator.handleTranslatePreset();
+  assert.deepEqual(progress.at(-1), [1, 1, false]);
+  const completedProgress = progress.slice();
+  for (let i = 0; i < 5; i++) {
+    await translator.handleTranslatePreset({ incremental: true, translateOnly: true, force: true });
+  }
+  assert.deepEqual(progress, completedProgress, 'idle checks must not reset or resurrect the completion toast');
+  assert.equal(translator.translating, false);
+  assert.equal(requests.length, 1);
+
+  nodes.push(new MockElement('P', 'Second comment'));
+  await translator.handleTranslatePreset({ incremental: true, translateOnly: true, force: true });
+  assert.deepEqual(progress[completedProgress.length], [1, 2, true]);
+  assert.deepEqual(progress.at(-1), [2, 2, false]);
+  assert.deepEqual(requests, [['First comment'], ['Second comment']]);
+  translator.restorePage();
+});
+
 test('YouTube comment wrappers are sent as plain prose without formatting markers', () => {
   const comment = new MockElement('YT-ATTRIBUTED-STRING', 'A thoughtful comment.');
   comment.id = 'content-text';
@@ -281,4 +345,145 @@ test('Hidden responsive copies and chapter menus are excluded from translation',
   hidden.getClientRects = () => [];
   const units = collectTranslatableUnits({ querySelectorAll: () => [visible, hidden] });
   assert.deepEqual(units.map(unit => unit.sourceText), ['Visible comment']);
+});
+
+test('Restoring a reused title never overwrites new site content with the previous original', () => {
+  const doc = new MockDocument();
+  const title = new MockElement('H1', 'First video');
+  applyTranslationToElement(title, 'First video', '第一部影片', 'monolingual', doc);
+  // Simulate the site reusing the title element before navigation cleanup runs.
+  title.textContent = 'Second video';
+  // The simple mock stores innerHTML separately; clear it to model the site replacement.
+  delete title.innerHTML;
+  restoreTranslatedDom(title);
+  assert.equal(title.textContent, 'Second video');
+  assert.equal(title.hasAttribute('data-wuf-original'), false);
+});
+
+test('A late response cannot replace a title that the site reused during inference', async () => {
+  const { WufDomTranslator } = await import('../dist/wuf/index.js');
+  const title = new MockElement('H1', 'First video');
+  let release;
+  const translator = new WufDomTranslator({
+    root: { querySelectorAll: () => [title] }, doc: new MockDocument(),
+    getConfig: async () => ({ engine: 'openai-compat-local', targetLanguage: 'zh-TW', displayMode: 'monolingual',
+      batchConfig: { webConcurrency: 1, webBatchUnits: 1, webBatchChars: 1000, firstBatchUnits: 1, firstBatchChars: 1000 } }),
+    translateBatch: async () => new Promise(resolve => { release = resolve; }),
+  });
+  const running = translator.handleTranslatePreset();
+  await new Promise(resolve => setImmediate(resolve));
+  title.textContent = 'Second video';
+  release(['第一部影片']);
+  await running;
+  assert.equal(title.textContent, 'Second video');
+  assert.equal(translator.translated, false);
+  assert.equal(translator.completedUnits, 0);
+  assert.equal(translator.totalUnits, 0, 'replaced content must leave no phantom pending unit');
+});
+
+test('YouTube title translation preserves the live custom element in both display modes', () => {
+  for (const mode of ['monolingual', 'bilingual']) {
+    const parent = new MockElement('DIV');
+    const title = new MockElement('H1', 'First video');
+    const component = new MockElement('YT-FORMATTED-STRING', 'First video');
+    title.appendChild(component); parent.appendChild(title);
+    const values = new Map([['display', { value: 'flex', priority: '' }]]);
+    title.style = {
+      getPropertyValue: key => values.get(key)?.value || '',
+      getPropertyPriority: key => values.get(key)?.priority || '',
+      setProperty: (key, value, priority = '') => values.set(key, { value, priority }),
+      removeProperty: key => values.delete(key),
+    };
+    title.matches = selector => selector.includes('ytd-watch-metadata h1');
+    title.insertAdjacentElement = (_position, element) => parent.appendChild(element);
+    title.querySelector = selector => selector === 'yt-formatted-string' ? component : null;
+    const doc = new MockDocument();
+    doc.defaultView = { getComputedStyle: target => {
+      assert.equal(target, component);
+      return { font: '', fontSize: '20px', fontWeight: '700', lineHeight: '28px', color: 'rgb(241, 241, 241)', fontFamily: 'Roboto, Arial, sans-serif' };
+    } };
+    applyTranslationToElement(title, 'First video', '第一部影片', mode, doc);
+    const rendered = parent.querySelector('[data-wuf-injected="true"]');
+    assert.equal(rendered.style.fontSize, '20px');
+    assert.equal(rendered.style.fontWeight, '700');
+    assert.equal(rendered.style.lineHeight, '28px');
+    assert.equal(rendered.style.color, 'rgb(241, 241, 241)');
+    assert.equal(title.childNodes[0], component, 'framework component identity must be unchanged');
+    assert.equal(component.textContent, 'First video');
+    assert.equal(title.hasAttribute('data-wuf-original'), false);
+    assert.equal(parent.querySelector('[data-wuf-injected="true"]').textContent, '第一部影片');
+    assert.equal(title.style.getPropertyValue('display'), mode === 'monolingual' ? 'none' : 'flex');
+    // A framework update targets the exact original component, even while hidden.
+    component.textContent = 'Second video'; title.textContent = 'Second video';
+    restoreTranslatedDom(parent);
+    assert.equal(title.childNodes[0], component);
+    assert.equal(component.textContent, 'Second video');
+    assert.equal(title.textContent, 'Second video');
+    assert.equal(title.style.getPropertyValue('display'), 'flex');
+    assert.equal(parent.querySelector('[data-wuf-injected="true"]'), null);
+  }
+});
+
+test('Multi-unit translation activates sticky state on first batch and stays translated if a later node mutates', async () => {
+  const { WufDomTranslator, handleRuntimeMessage } = await import('../dist/wuf/index.js');
+  const first = new MockElement('P', 'First paragraph');
+  const second = new MockElement('P', 'Second paragraph');
+  const states = [];
+  let releaseSecond;
+  const translator = new WufDomTranslator({
+    root: { querySelectorAll: () => [first, second] },
+    doc: new MockDocument(),
+    onStateChange: state => states.push(state),
+    getConfig: async () => ({
+      engine: 'openai-compat-local',
+      targetLanguage: 'zh-TW',
+      displayMode: 'monolingual',
+      batchConfig: { webConcurrency: 1, webBatchUnits: 1, webBatchChars: 1000, firstBatchUnits: 1, firstBatchChars: 1000 },
+    }),
+    translateBatch: async texts => {
+      if (texts[0] === 'First paragraph') return ['第一段'];
+      return new Promise(resolve => { releaseSecond = resolve; });
+    },
+  });
+
+  const running = translator.handleTranslatePreset();
+  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(translator.translated, true);
+  assert.deepEqual(states, [true], 'state must become true as soon as the first batch applies');
+
+  // Mutate the second paragraph while its request is in flight
+  second.textContent = 'Updated second paragraph';
+  releaseSecond(['第二段']);
+  await running;
+
+  assert.equal(translator.translated, true, 'page stays translated when at least one unit succeeded');
+  assert.equal(states.at(-1), true);
+
+  // Verify background sticky-query inherits sticky state from openerTabId
+  const syncStore = {};
+  const prevChrome = globalThis.chrome;
+  globalThis.chrome = {
+    storage: {
+      sync: {
+        get: async key => (typeof key === 'string' ? { [key]: syncStore[key] } : syncStore),
+        set: async items => Object.assign(syncStore, items),
+      },
+    },
+  };
+  try {
+    await handleRuntimeMessage({
+      type: 'wuf:save-settings',
+      settings: { webpage: { engine: 'openai-compat-local', targetLanguage: 'zh-TW', displayMode: 'bilingual', customModelOverride: '', autoTranslateHosts: [], crossTabSticky: true } },
+    });
+    await handleRuntimeMessage({ type: 'wuf:sticky-set', tabId: 101 });
+    const stickyResp = await handleRuntimeMessage(
+      { type: 'wuf:sticky-query' },
+      { tab: { id: 202, openerTabId: 101 } },
+    );
+    assert.equal(stickyResp.ok, true);
+    assert.equal(stickyResp.data.shouldTranslate, true);
+  } finally {
+    globalThis.chrome = prevChrome;
+  }
 });

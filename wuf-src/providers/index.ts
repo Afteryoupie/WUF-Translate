@@ -12,6 +12,7 @@ import { translateWithOpenAICompat } from './openai-compat.ts';
 import { translateWithOpenCC } from './opencc.ts';
 import { subtitleRepairPrompt, type DecisionRepairItem } from '../subtitle/subtitle-decisions.ts';
 import { subtitleContextPrompt, type SubtitleTranslationContext } from '../subtitle/translation-context.ts';
+import { createProvider as createWuPageProvider } from '../vendor/wupage/core/background/providers';
 
 export interface ExecuteTranslationOptions {
   signal?: AbortSignal;
@@ -56,6 +57,13 @@ export async function executeTranslation(
     );
     return { translations: converted, openccApplied: openccVariant };
   };
+
+  if (engine === 'microsoft-translate') {
+    const provider = createWuPageProvider({ id: engine, label: 'Microsoft', type: 'microsoft-web-translate' });
+    const rawTranslations = await provider.translateBatch({ texts, sourceLang: sourceLanguage, targetLang: effectiveTargetLang }, options?.signal);
+    const { translations, openccApplied } = await maybePostProcessOpenCC(rawTranslations);
+    return { translations, engine, effectiveModel: 'microsoft', ...(openccApplied ? { openccApplied } : {}) };
+  }
 
   if (engine === 'google-translate') {
     const rawTranslations = await translateWithGoogle({

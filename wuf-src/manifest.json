@@ -11,6 +11,7 @@
     "nativeMessaging",
     "contextMenus",
     "tabs",
+    "webNavigation",
     "activeTab",
     "scripting"
   ],
@@ -33,6 +34,9 @@
     {
       "matches": ["http://*/*", "https://*/*"],
       "js": ["content-webpage.js"],
+      "all_frames": true,
+      "match_about_blank": true,
+      "match_origin_as_fallback": true,
       "run_at": "document_idle"
     }
   ],

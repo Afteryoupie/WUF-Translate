@@ -1,0 +1,124 @@
+import { ProviderError } from "../shared/errors";
+
+export interface DoubaoSegment {
+  sourceIndex: number;
+  text: string;
+  translate: boolean;
+}
+
+const PROTECTED_TOKEN = /⟪WUPAGE\d+⟫/gu;
+const ATOM = /⟪WUPAGE\d+⟫|[\s\S]/gu;
+
+function validateLimit(value: number): void {
+  if (!Number.isInteger(value) || value < 1) throw new RangeError("Expected a positive integer.");
+}
+
+function tooLong(): ProviderError {
+  return new ProviderError("豆包待译内容中的单个保护标记超过长度限制。", "input-too-long");
+}
+
+function needsTranslation(text: string): boolean {
+  return /[\p{L}\p{N}]/u.test(text.replace(PROTECTED_TOKEN, ""));
+}
+
+function appendChunk(output: DoubaoSegment[], sourceIndex: number, text: string): void {
+  const prefix = /^\s*/u.exec(text)![0];
+  const suffix = /\s*$/u.exec(text)![0];
+  if (prefix.length === text.length) {
+    if (text) output.push({ sourceIndex, text, translate: false });
+    return;
+  }
+  if (prefix) output.push({ sourceIndex, text: prefix, translate: false });
+  const middle = text.slice(prefix.length, text.length - suffix.length);
+  if (middle) output.push({ sourceIndex, text: middle, translate: needsTranslation(middle) });
+  if (suffix) output.push({ sourceIndex, text: suffix, translate: false });
+}
+
+/** Splits without losing any source characters or cutting a placeholder/surrogate pair. */
+export function segmentDoubaoTexts(texts: string[], maxChars = 2000): DoubaoSegment[] {
+  validateLimit(maxChars);
+  const output: DoubaoSegment[] = [];
+  for (const [sourceIndex, source] of texts.entries()) {
+    const atoms = source.match(ATOM) ?? [];
+    let start = 0;
+    while (start < atoms.length) {
+      let end = start;
+      let size = 0;
+      let sentenceEnd = start;
+      let whitespaceEnd = start;
+      while (end < atoms.length && size + atoms[end].length <= maxChars) {
+        const atom = atoms[end];
+        size += atom.length;
+        end++;
+        if (/^\s$/u.test(atom)) {
+          whitespaceEnd = end;
+          if (atom === "\n" || atom === "\r") sentenceEnd = end;
+        } else if (/^[。！？；]$/u.test(atom)
+          || (/^[.!?;]$/u.test(atom) && (end === atoms.length || /^\s$/u.test(atoms[end])))) {
+          sentenceEnd = end;
+        }
+      }
+      if (end === start) throw tooLong();
+      if (end < atoms.length) {
+        end = sentenceEnd > start ? sentenceEnd : whitespaceEnd > start ? whitespaceEnd : end;
+      }
+      appendChunk(output, sourceIndex, atoms.slice(start, end).join(""));
+      start = end;
+    }
+  }
+  return output;
+}
+
+/** Returns indexes into the flat segments list; local fragments never enter requests. */
+export function groupDoubaoSegments(
+  segments: DoubaoSegment[],
+  maxChars = 2000,
+  maxItems = 10
+): number[][] {
+  validateLimit(maxChars);
+  validateLimit(maxItems);
+  const groups: number[][] = [];
+  let group: number[] = [];
+  let size = 0;
+  for (const [index, segment] of segments.entries()) {
+    if (!segment.translate) continue;
+    if (!segment.text.trim()) {
+      throw new ProviderError("豆包待译片段为空。", "incomplete");
+    }
+    if (segment.text.length > maxChars) throw tooLong();
+    if (group.length && (size + segment.text.length > maxChars || group.length === maxItems)) {
+      groups.push(group);
+      group = [];
+      size = 0;
+    }
+    group.push(index);
+    size += segment.text.length;
+  }
+  if (group.length) groups.push(group);
+  return groups;
+}
+
+export function reassembleDoubaoSegments(
+  sourceCount: number,
+  segments: DoubaoSegment[],
+  translations: Map<number, string>
+): string[] {
+  if (!Number.isInteger(sourceCount) || sourceCount < 0) throw new RangeError("Invalid source count.");
+  const output = Array<string>(sourceCount).fill("");
+  for (const [index, segment] of segments.entries()) {
+    if (!Number.isInteger(segment.sourceIndex) || segment.sourceIndex < 0 || segment.sourceIndex >= sourceCount) {
+      throw new ProviderError("豆包译文与原文的对应关系无效。", "protocol-changed");
+    }
+    if (!segment.translate) {
+      output[segment.sourceIndex] += segment.text;
+      continue;
+    }
+    const translated = translations.get(index);
+    if (typeof translated !== "string" || !translated.trim()) {
+      throw new ProviderError("豆包返回的译文不完整，请重试。", "incomplete");
+    }
+    // Source boundary whitespace is already represented by local fragments.
+    output[segment.sourceIndex] += translated.trim();
+  }
+  return output;
+}

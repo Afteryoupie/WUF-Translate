@@ -125,15 +125,16 @@ export async function initPopup(): Promise<void> {
     const engineCaption = document.getElementById('wuf-engine-caption');
     if (engineCaption) {
       engineCaption.hidden = usesLocalModel;
-      engineCaption.textContent = t(locale, saved.webpage.engine === 'google-translate'
-        ? 'engine.googleTranslate' : 'engine.openaiCompatOnline');
+      engineCaption.textContent = saved.webpage.engine === 'microsoft-translate' ? 'Microsoft Translator'
+        : t(locale, saved.webpage.engine === 'google-translate' ? 'engine.googleTranslate' : 'engine.openaiCompatOnline');
     }
     if (!usesLocalModel && wakeBtn) wakeBtn.hidden = true;
 
     // Pill
     if (modelPill) {
       modelPill.textContent = usesLocalModel ? 'Local'
-        : saved.webpage.engine === 'google-translate' ? 'Google' : 'Cloud';
+        : saved.webpage.engine === 'google-translate' ? 'Google'
+          : saved.webpage.engine === 'microsoft-translate' ? 'Microsoft' : 'Cloud';
     }
 
     // Display mode buttons
@@ -186,6 +187,7 @@ export async function initPopup(): Promise<void> {
     let isTranslated = false;
     let isTranslating = false;
     let isEditing = false;
+    let translationError = '';
     let progressInfo: { completedUnits?: number; totalUnits?: number } | null = null;
 
     try {
@@ -196,6 +198,7 @@ export async function initPopup(): Promise<void> {
         isTranslated = Boolean(stateResp.translated);
         isTranslating = Boolean(stateResp.translating);
         isEditing = Boolean(stateResp.editing);
+        translationError = typeof stateResp.error === 'string' ? stateResp.error : '';
         progressInfo = (stateResp.progress as { completedUnits?: number; totalUnits?: number }) || null;
       } else {
         const badge = await globalThis.chrome.action.getBadgeText({ tabId: tab.id });
@@ -206,9 +209,9 @@ export async function initPopup(): Promise<void> {
     }
 
     if (isTranslating) {
-      translateBtn.dataset.mode = 'translating';
-      translateBtn.disabled = true;
-      translateLabel.textContent = t(currentLocale, 'popup.translating');
+      translateBtn.dataset.mode = 'restore';
+      translateBtn.disabled = false;
+      translateLabel.textContent = t(currentLocale, 'popup.showOriginal');
       if (editPageBtn) editPageBtn.hidden = true;
 
       if (progressIcon) progressIcon.textContent = '◌';
@@ -236,8 +239,12 @@ export async function initPopup(): Promise<void> {
           : t(currentLocale, 'popup.editTranslations');
         editPageBtn.classList.toggle('active', isEditing);
       }
-      if (progressIcon) progressIcon.textContent = '✓';
-      if (progressText) progressText.textContent = t(currentLocale, 'popup.progressTranslated');
+      const incomplete = Boolean(progressInfo?.totalUnits &&
+        (progressInfo.completedUnits || 0) < progressInfo.totalUnits);
+      if (progressIcon) progressIcon.textContent = incomplete ? '!' : '✓';
+      if (progressText) progressText.textContent = incomplete
+        ? `${progressInfo?.completedUnits || 0}/${progressInfo?.totalUnits} (${Math.round((progressInfo?.completedUnits || 0) / progressInfo!.totalUnits! * 100)}%)`
+        : t(currentLocale, 'popup.progressTranslated');
       if (progressBarWrap) progressBarWrap.hidden = true;
     } else {
       translateBtn.dataset.mode = 'translate';
@@ -246,6 +253,11 @@ export async function initPopup(): Promise<void> {
       if (editPageBtn) editPageBtn.hidden = true;
       if (progressIcon) progressIcon.textContent = '○';
       if (progressText) progressText.textContent = t(currentLocale, 'popup.progressOriginal');
+      if (progressBarWrap) progressBarWrap.hidden = true;
+    }
+    if (translationError && progressText) {
+      progressText.textContent = translationError;
+      if (progressIcon) progressIcon.textContent = '!';
       if (progressBarWrap) progressBarWrap.hidden = true;
     }
   };
@@ -447,8 +459,9 @@ export async function initPopup(): Promise<void> {
         // ignore
       }
     } else {
-      translateBtn.disabled = true;
-      if (translateLabel) translateLabel.textContent = t(currentLocale, 'popup.translating');
+      translateBtn.dataset.mode = 'restore';
+      translateBtn.disabled = false;
+      if (translateLabel) translateLabel.textContent = t(currentLocale, 'popup.showOriginal');
       try {
         await globalThis.chrome?.tabs?.sendMessage(
           tab.id,

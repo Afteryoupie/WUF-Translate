@@ -17,6 +17,8 @@ if (manifest.key !== identity.key) {
 
 rmSync(outDir, { recursive: true, force: true });
 mkdirSync(outDir, { recursive: true });
+copyFileSync(resolve(srcDir, 'vendor/wupage/NOTICE.md'), resolve(outDir, 'WUPAGE-NOTICE.md'));
+copyFileSync(resolve(srcDir, 'vendor/wupage/UPSTREAM.json'), resolve(outDir, 'WUPAGE-UPSTREAM.json'));
 
 // 1. Write verified manifest.json
 writeFileSync(resolve(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n', 'utf8');
@@ -86,6 +88,7 @@ await build({
   format: 'iife',
   target: 'es2022',
   platform: 'browser',
+  define: { 'import.meta.env.MODE': '"production"' },
   charset: 'utf8',
 });
 
@@ -102,7 +105,8 @@ await build({
   format: 'esm',
   target: 'es2022',
   platform: 'browser',
+  define: { 'import.meta.env.MODE': '"production"' },
   charset: 'utf8',
 });
 
-console.log('[wuf-build] Built clean-room extension to dist/wuf/');
+console.log('[wuf-build] Built WUF extension to dist/wuf/');
