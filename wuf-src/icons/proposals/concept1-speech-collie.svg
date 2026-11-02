@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="100%" height="100%">
+  <defs>
+    <filter id="c1-shadow" x="-10%" y="-10%" width="125%" height="125%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.08" />
+    </filter>
+  </defs>
+
+  <!-- Background squircle (soft warm paper) -->
+  <rect x="12" y="12" width="232" height="232" rx="54" fill="#F5F3EC" />
+
+  <g filter="url(#c1-shadow)">
+    <!-- Right Speech Bubble (Vermilion / Target Language & Translation) -->
+    <path d="M 130 84 
+             C 172 84, 206 114, 206 150 
+             C 206 168, 196 184, 180 195 
+             L 192 216 
+             L 165 208 
+             C 154 213, 142 216, 130 216 
+             C 88 216, 54 186, 54 150 
+             C 54 140, 57 131, 62 122 
+             C 69 99, 97 84, 130 84 Z" 
+          fill="#BF421F" />
+
+    <!-- Left Speech Bubble & Border Collie Silhouette (Ink #242620) -->
+    <!-- Combines Collie Ears, Face Contour, and Speech Tail -->
+    <path d="M 106 52
+             C 100 48, 88 42, 74 44
+             C 62 46, 50 56, 44 72
+             C 41 80, 42 90, 48 94
+             C 44 100, 38 112, 38 128
+             C 38 152, 54 172, 76 182
+             L 64 212
+             L 98 198
+             C 106 201, 114 202, 122 202
+             C 134 202, 145 199, 154 194
+             C 142 184, 134 168, 134 150
+             C 134 118, 158 92, 190 86
+             C 186 78, 178 72, 168 68
+             C 154 62, 148 70, 142 74
+             C 136 62, 124 54, 106 52 Z"
+          fill="#242620" />
+
+    <!-- Border Collie Blaze / Snout accent (Cream #F5F3EC) -->
+    <path d="M 104 74
+             C 98 84, 94 98, 92 112
+             C 91 120, 88 128, 82 134
+             C 74 142, 68 150, 68 160
+             C 84 164, 102 158, 114 146
+             C 122 138, 126 126, 126 112
+             C 126 94, 118 82, 104 74 Z"
+          fill="#F5F3EC" />
+
+    <!-- Collie Nose (Ink) -->
+    <ellipse cx="80" cy="142" rx="7" ry="5" fill="#242620" />
+
+    <!-- Audio / Translation Equalizer Waveforms inside the Vermilion Bubble -->
+    <!-- Pill bars in Crisp Warm Paper White -->
+    <rect x="142" y="136" width="8" height="28" rx="4" fill="#F5F3EC" />
+    <rect x="156" y="122" width="8" height="56" rx="4" fill="#F5F3EC" />
+    <rect x="170" y="130" width="8" height="40" rx="4" fill="#F5F3EC" />
+    <rect x="184" y="140" width="8" height="20" rx="4" fill="#F5F3EC" />
+  </g>
+</svg>

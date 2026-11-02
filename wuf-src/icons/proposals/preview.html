@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <title>WUF Translate - 新圖示候選向量預覽與實測</title>
+  <style>
+    :root {
+      --bg: #F9F8F6;
+      --card-bg: #FFFFFF;
+      --text: #242620;
+      --text-muted: #73756E;
+      --border: #E8E5DF;
+      --vermilion: #BF421F;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans TC", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 40px 24px;
+      line-height: 1.6;
+    }
+    .container {
+      max-width: 1040px;
+      margin: 0 auto;
+    }
+    header {
+      margin-bottom: 36px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 24px;
+    }
+    h1 {
+      font-size: 28px;
+      margin: 0 0 8px 0;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .badge {
+      font-size: 13px;
+      font-weight: normal;
+      background: rgba(191, 66, 31, 0.1);
+      color: var(--vermilion);
+      padding: 4px 10px;
+      border-radius: 12px;
+    }
+    .subtitle {
+      color: var(--text-muted);
+      font-size: 15px;
+      margin: 0;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 24px;
+      margin-bottom: 48px;
+    }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 24px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.03);
+      display: flex;
+      flex-direction: column;
+    }
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 16px;
+    }
+    .card-title {
+      font-size: 18px;
+      font-weight: 700;
+      margin: 0;
+    }
+    .card-tag {
+      font-size: 12px;
+      color: var(--vermilion);
+      font-weight: 600;
+    }
+    .preview-box {
+      width: 100%;
+      height: 220px;
+      background: #F5F3EC;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 20px;
+      border: 1px dashed #DCD8CD;
+    }
+    .preview-box svg {
+      width: 160px;
+      height: 160px;
+      filter: drop-shadow(0 10px 18px rgba(0,0,0,0.06));
+    }
+    .desc {
+      font-size: 14px;
+      color: var(--text);
+      margin-bottom: 16px;
+      flex-grow: 1;
+    }
+    .scale-row {
+      background: #F3F1EC;
+      padding: 12px 16px;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-around;
+      margin-top: 12px;
+    }
+    .scale-item {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+    }
+    .scale-label {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: monospace;
+    }
+    /* Toolbar simulation */
+    .toolbar-sim {
+      background: #ECEAE4;
+      border: 1px solid #D6D2C8;
+      border-radius: 14px;
+      padding: 24px;
+      margin-top: 36px;
+    }
+    .browser-bar {
+      background: #FFFFFF;
+      height: 40px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      padding: 0 16px;
+      gap: 16px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.04);
+      margin-top: 12px;
+    }
+    .url-input {
+      flex-grow: 1;
+      height: 26px;
+      background: #F1F0EC;
+      border-radius: 13px;
+      display: flex;
+      align-items: center;
+      padding: 0 12px;
+      font-size: 12px;
+      color: #73756E;
+    }
+    .ext-icons {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .dark-mode-test {
+      background: #1C1E1A;
+      color: #ECEAE4;
+      padding: 20px;
+      border-radius: 12px;
+      margin-top: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-around;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>WUF Translate · 圖示向量化設計候選 <span class="badge">向量 SVG 實測版</span></h1>
+      <p class="subtitle">針對邊境牧羊犬主題、WUF 叫聲/雙語發聲轉譯與瀏覽器工具列尺寸（16/32/48/128px）進行像素對齊與向量設計。</p>
+    </header>
+
+    <div class="grid">
+      <!-- 方案 1 -->
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title">方案 1：對話轉譯邊牧</h2>
+          <span class="card-tag">首選推薦 ⭐</span>
+        </div>
+        <div class="preview-box">
+          <object data="concept1-speech-collie.svg" type="image/svg+xml" width="160" height="160"></object>
+        </div>
+        <p class="desc">
+          <strong>視覺核心</strong>：左側墨色對話氣泡勾勒出邊牧的側影與敏銳立耳，與右側朱紅色的目標語言氣泡交疊，中心是語音/字幕翻譯聲波。<br>
+          <strong>主題契合</strong>：完美表達「WUF（汪汪叫聲）＋雙向語言交流（A ⇄ B）」，極具擴充功能特色。
+        </p>
+        <div class="scale-row">
+          <div class="scale-item">
+            <object data="concept1-speech-collie.svg" type="image/svg+xml" width="48" height="48"></object>
+            <span class="scale-label">48px</span>
+          </div>
+          <div class="scale-item">
+            <object data="concept1-speech-collie.svg" type="image/svg+xml" width="32" height="32"></object>
+            <span class="scale-label">32px</span>
+          </div>
+          <div class="scale-item">
+            <object data="concept1-speech-collie.svg" type="image/svg+xml" width="16" height="16"></object>
+            <span class="scale-label">16px</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 方案 2 -->
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title">方案 2：正面邊牧與音波環</h2>
+          <span class="card-tag">吉祥物感</span>
+        </div>
+        <div class="preview-box">
+          <object data="concept2-audio-collie.svg" type="image/svg+xml" width="160" height="160"></object>
+        </div>
+        <p class="desc">
+          <strong>視覺核心</strong>：正面幾何對稱的邊牧面孔，雙耳間配有朱紅色即時字幕耳機音頻環與聲波脈衝。<br>
+          <strong>主題契合</strong>：與 Watchdog 的側面守門犬區隔（改為正面親和交流），主打即時語音辨識與多語言字幕監聽。
+        </p>
+        <div class="scale-row">
+          <div class="scale-item">
+            <object data="concept2-audio-collie.svg" type="image/svg+xml" width="48" height="48"></object>
+            <span class="scale-label">48px</span>
+          </div>
+          <div class="scale-item">
+            <object data="concept2-audio-collie.svg" type="image/svg+xml" width="32" height="32"></object>
+            <span class="scale-label">32px</span>
+          </div>
+          <div class="scale-item">
+            <object data="concept2-audio-collie.svg" type="image/svg+xml" width="16" height="16"></object>
+            <span class="scale-label">16px</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 方案 3 -->
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title">方案 3：W 字母轉譯循環</h2>
+          <span class="card-tag">科技俐落</span>
+        </div>
+        <div class="preview-box">
+          <object data="concept3-monogram-w.svg" type="image/svg+xml" width="160" height="160"></object>
+        </div>
+        <p class="desc">
+          <strong>視覺核心</strong>：幾何大寫「W」Monogram，兩側折角呼應邊牧的立體折耳，中央環繞朱紅色雙向互譯交換箭頭（⇄）。<br>
+          <strong>主題契合</strong>：標準現代軟體 Monogram，結構乾淨對稱，在極小解析度下依然清晰不糊。
+        </p>
+        <div class="scale-row">
+          <div class="scale-item">
+            <object data="concept3-monogram-w.svg" type="image/svg+xml" width="48" height="48"></object>
+            <span class="scale-label">48px</span>
+          </div>
+          <div class="scale-item">
+            <object data="concept3-monogram-w.svg" type="image/svg+xml" width="32" height="32"></object>
+            <span class="scale-label">32px</span>
+          </div>
+          <div class="scale-item">
+            <object data="concept3-monogram-w.svg" type="image/svg+xml" width="16" height="16"></object>
+            <span class="scale-label">16px</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 模擬瀏覽器工具列真實外觀 -->
+    <div class="toolbar-sim">
+      <h3 style="margin: 0 0 4px 0; font-size: 16px;">🌐 瀏覽器工具列環境模擬（實際 16px / 24px 工具列位置）</h3>
+      <p style="margin: 0; font-size: 13px; color: var(--text-muted);">觀察三個圖標置於 Chrome / Edge 工具列時的視覺重心與易辨度：</p>
+      
+      <div class="browser-bar">
+        <span style="font-size: 14px; color: #999;">🔒</span>
+        <div class="url-input">https://youtube.com/watch?v=... (YouTube 即時雙語字幕)</div>
+        <div class="ext-icons">
+          <div title="方案 1 工具列效果" style="display:flex;align-items:center;cursor:pointer;">
+            <object data="concept1-speech-collie.svg" type="image/svg+xml" width="22" height="22"></object>
+          </div>
+          <div title="方案 2 工具列效果" style="display:flex;align-items:center;cursor:pointer;">
+            <object data="concept2-audio-collie.svg" type="image/svg+xml" width="22" height="22"></object>
+          </div>
+          <div title="方案 3 工具列效果" style="display:flex;align-items:center;cursor:pointer;">
+            <object data="concept3-monogram-w.svg" type="image/svg+xml" width="22" height="22"></object>
+          </div>
+        </div>
+      </div>
+
+      <div class="dark-mode-test">
+        <span style="font-size: 13px;">深色模式工具列適配對比：</span>
+        <object data="concept1-speech-collie.svg" type="image/svg+xml" width="32" height="32"></object>
+        <object data="concept2-audio-collie.svg" type="image/svg+xml" width="32" height="32"></object>
+        <object data="concept3-monogram-w.svg" type="image/svg+xml" width="32" height="32"></object>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

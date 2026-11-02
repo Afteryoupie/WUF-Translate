@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="100%" height="100%">
+  <defs>
+    <filter id="c3-shadow" x="-10%" y="-10%" width="125%" height="125%">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000000" flood-opacity="0.12" />
+    </filter>
+  </defs>
+
+  <!-- Background squircle -->
+  <rect x="12" y="12" width="232" height="232" rx="54" fill="#F5F3EC" />
+
+  <g filter="url(#c3-shadow)">
+    <!-- Dynamic Vermilion Translation Exchange Ring (⇄ Loop) -->
+    <g fill="none" stroke="#BF421F" stroke-width="12" stroke-linecap="round">
+      <!-- Upper translation arc with clockwise arrow -->
+      <path d="M 66 128 A 62 62 0 0 1 188 116" />
+      <!-- Lower translation arc with counter-clockwise arrow -->
+      <path d="M 190 128 A 62 62 0 0 1 68 140" />
+    </g>
+
+    <!-- Arrow Heads (Vermilion) -->
+    <!-- Top right arrow pointing right/down -->
+    <polygon points="184,98 202,118 174,124" fill="#BF421F" />
+    <!-- Bottom left arrow pointing left/up -->
+    <polygon points="72,158 54,138 82,132" fill="#BF421F" />
+
+    <!-- Bold WUF Monogram 'W' with Border Collie Ear Silhouettes -->
+    <!-- Left outer ear flare: tipped ear contour -->
+    <!-- Right outer ear flare: tipped ear contour -->
+    <path d="M 44 80
+             C 40 70, 52 64, 60 74
+             C 68 84, 74 100, 78 116
+             L 94 176
+             C 98 190, 106 192, 114 178
+             L 128 146
+             L 142 178
+             C 150 192, 158 190, 162 176
+             L 178 116
+             C 182 100, 188 84, 196 74
+             C 204 64, 216 70, 212 80
+             C 208 94, 202 110, 196 130
+             L 176 190
+             C 170 206, 154 212, 140 196
+             L 128 174
+             L 116 196
+             C 102 212, 86 206, 80 190
+             L 60 130
+             C 54 110, 48 94, 44 80 Z" 
+          fill="#242620" />
+
+    <!-- Center White Blaze Chevron (Accentuates Collie marking inside the W) -->
+    <polygon points="128,136 122,152 134,152" fill="#F5F3EC" />
+  </g>
+</svg>
