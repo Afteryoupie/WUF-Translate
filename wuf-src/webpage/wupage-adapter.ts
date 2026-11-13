@@ -57,7 +57,7 @@ export class WufWuPageTranslator {
       signal?.addEventListener('abort', cancel, { once: true });
       try {
         const response = await sendWufRuntimeMessage<TranslationResponse & { cached: number }>({ type: 'wuf:wupage-translate', requestId,
-          request: { texts: request.texts, targetLanguage: request.targetLang, sourceLanguage: request.sourceLang,
+          request: { texts: request.texts, paragraphIds: request.paragraphIds, targetLanguage: request.targetLang, sourceLanguage: request.sourceLang,
             engine: request.providerId as TranslationEngineId, purpose: 'webpage', modelOverride: request.modelOverride,
             webpageContext: request.context, preservePlaceholders: request.preservePlaceholders,
             wupageSession: request.pageSession } });

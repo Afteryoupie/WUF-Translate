@@ -29,6 +29,7 @@ import { FrameSessionManager } from '../vendor/wupage/background/frame-sessions'
 import { ProviderError } from '../vendor/wupage/shared/errors';
 import { toWuPageError } from '../webpage/wupage-errors.ts';
 import { translateWuPage } from '../webpage/wupage-background.ts';
+import { translateLocalWebpage } from '../webpage/local-webpage-translator.ts';
 import { CACHE_PREFIX as WUPAGE_CACHE_PREFIX } from '../vendor/wupage/core/shared/defaults';
 import { ProviderError as WuPageCoreProviderError } from '../vendor/wupage/core/shared/errors';
 
@@ -208,6 +209,16 @@ async function handleMessage(
 
         const req = message.request;
         signal?.throwIfAborted();
+        if (req.purpose === 'webpage' && req.engine === 'openai-compat-local') {
+          const shouldApplyOpenCC =
+            req.applyOpenCC ?? (saved.openccEnabled && /^zh/i.test(req.targetLanguage));
+          return {
+            ok: true,
+            data: await translateLocalWebpage(req, saved, secrets, signal, false, {
+              applyOpenCC: shouldApplyOpenCC,
+            }),
+          };
+        }
         if (req.purpose === 'subtitle') {
           const provider = resolvePresetProvider(saved, secrets, 'subtitle', req.engine, req.modelOverride);
           const key = {

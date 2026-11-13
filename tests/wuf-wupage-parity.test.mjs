@@ -113,7 +113,7 @@ test('an unchanged Watchdog server-default model resolves to the active Apple mo
     if (String(url).endsWith('/api/status')) return Response.json({ status: 'running', current_model_id: 'apple-intelligence-translation' });
     if (String(url).endsWith('/v1/chat/completions')) {
       requestBody = JSON.parse(init.body);
-      return Response.json({ choices: [{ message: { content: '["第一段"]' } }] });
+      return Response.json({ choices: [{ message: { content: '第一段' } }] });
     }
     throw new Error(`Unexpected endpoint ${url}`);
   };
@@ -123,6 +123,8 @@ test('an unchanged Watchdog server-default model resolves to the active Apple mo
     } });
     assert.equal(result.ok, true, JSON.stringify(result));
     assert.equal(requestBody.model, 'apple-intelligence-translation');
+    assert.equal(requestBody.stream, false);
+    assert.equal(requestBody.messages.at(-1).content, 'First paragraph');
     assert.deepEqual(result.data.translations, ['第一段']);
   } finally { globalThis.chrome = originalChrome; globalThis.fetch = originalFetch; }
 });
@@ -145,6 +147,7 @@ test('WuPage webpage cache handles multi-item hits and WUF cache controls', asyn
   const request = { texts: ['cache first', 'cache second'], targetLanguage: 'zh-TW', sourceLanguage: 'auto',
     engine: 'openai-compat-online', purpose: 'webpage', preservePlaceholders: true };
   try {
+    await handleRuntimeMessage({ type: 'wuf:clear-cache' });
     const first = await handleRuntimeMessage({ type: 'wuf:wupage-translate', request });
     const second = await handleRuntimeMessage({ type: 'wuf:wupage-translate', request });
     assert.equal(first.ok, true); assert.equal(second.ok, true);

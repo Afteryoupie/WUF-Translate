@@ -20,6 +20,8 @@ export * from './subtitle/decision-engine.ts';
 export * from './subtitle/subtitle-decisions.ts';
 export * from './subtitle/youtube-pipeline.ts';
 export * from './webpage/dom-translator.ts';
+export * from './webpage/local-webpage-translator.ts';
+export * from './webpage/wupage-settings.ts';
 export * from './i18n/index.ts';
 export * from './ui/theme-init.ts';
 export * from './options/options.ts';

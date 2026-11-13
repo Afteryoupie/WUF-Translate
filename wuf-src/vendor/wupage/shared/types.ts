@@ -25,6 +25,7 @@ export interface ExtensionSettings {
 }
 export interface TranslateBatchRequest {
   texts: string[];
+  paragraphIds?: string[];
   pageSession?: { id: string; documentKey: string };
   preservePlaceholders?: boolean;
   context?: string;

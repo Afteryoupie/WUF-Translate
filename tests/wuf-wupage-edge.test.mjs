@@ -274,6 +274,199 @@ test('Edge loads the complete extension: WuPage engine through real content/back
     await message({ type: 'wuf:restore-page' });
     assert.equal(await evaluate(page, `[...document.querySelectorAll('#content-text')].every((el,index)=>el.firstChild===commentWrappers[index]&&!el.querySelector('.wuf-bilingual-translation'))`), true);
     t.diagnostic('Real extension: both YouTube comment layouts use the existing WUF path and retain original wrappers.');
+
+    // Verify dedicated local-LLM webpage pipeline in real Edge browser:
+    // - single concurrency (max 1 in-flight completion)
+    // - plain-text per-paragraph & sentence-chunk requests (no JSON array or ---WUF-SEG---, stream: false)
+    // - single-paragraph failure isolation without blocking subsequent visible paragraphs
+    let inFlightLocal = 0;
+    let maxInFlightLocal = 0;
+    const localRequests = [];
+    const localServer = createServer(async (request, response) => {
+      if (request.url === '/v1/models') {
+        response.setHeader('Content-Type', 'application/json');
+        response.end(JSON.stringify({ object: 'list', data: [{ id: 'local-edge-model' }] }));
+        return;
+      }
+      if (request.url === '/v1/chat/completions') {
+        inFlightLocal++;
+        maxInFlightLocal = Math.max(maxInFlightLocal, inFlightLocal);
+        try {
+          let raw = '';
+          for await (const chunk of request) raw += chunk;
+          const body = JSON.parse(raw);
+          const usr = String(body.messages.at(-1).content);
+          localRequests.push({ usr, stream: body.stream, sys: String(body.messages[0].content) });
+          await sleep(25);
+          if (usr.includes('Fail this single local paragraph')) {
+            response.writeHead(500, { 'Content-Type': 'text/plain' }).end('single item error');
+            return;
+          }
+          if (usr.includes('⟪WUPAGE1⟫') && usr.includes('handles the full camera workflow')) {
+            // Simulate a local model dropping the closing link marker on the first pass.
+            response.setHeader('Content-Type', 'application/json');
+            response.end(JSON.stringify({ choices: [{ message: { content: '⟪WUPAGE0⟫Recipe Lab Studio在iPhone上處理完整工作流程。' } }] }));
+            return;
+          }
+          const translatedMock = usr
+            .replace(/Read more/g, '閱讀更多')
+            .replace(/Bold Guide/g, '粗體指南')
+            .replace(/Jump section/g, '跳轉章節')
+            .replace(/What it is/g, '這是什麼')
+            .replace(/Recipe Lab Studio/g, '配方實驗室');
+          response.setHeader('Content-Type', 'application/json');
+          response.end(JSON.stringify({ choices: [{ message: { content: `本機譯:${translatedMock}` } }] }));
+        } finally {
+          inFlightLocal--;
+        }
+        return;
+      }
+      response.setHeader('Content-Type', 'text/html; charset=utf-8');
+      response.end([
+        '<!doctype html><meta charset="utf-8">',
+        '<article>',
+        '<p id="loc-p1">Short visible first paragraph with <code>inline()</code> code.</p>',
+        '<p id="loc-fail">Fail this single local paragraph only.</p>',
+        '<p id="loc-links">Compare <a href="/first-doc">Read more</a> and <a href="/second-doc">Read more</a>, check <a id="lnk-bold" href="/bold-path" target="_blank" rel="noopener noreferrer"><strong>Bold Guide</strong></a>, or see <a href="#section-anchor">Jump section</a>.</p>',
+        '<ul><li id="loc-li-link"><a href="#what-it-is">What it is</a></li></ul>',
+        '<p id="loc-drop-marker"><a href="https://recipelab.io" rel="nofollow">Recipe Lab Studio</a> on iPhone handles the full camera workflow.</p>',
+        '<p id="loc-long">',
+        'Sentence one of the long paragraph describes how local language models work cleanly on small inputs. ',
+        'Sentence two expands the discussion past four hundred characters so the chunker splits cleanly at sentence boundaries without losing alignment. ',
+        'Sentence three continues explaining why predictable latency matters for interactive reading in browsers. ',
+        'Sentence four concludes the long paragraph and verifies deterministic reassembly by paragraph identifier.',
+        '</p>',
+        '<div style="height:2400px"></div>',
+        '<p id="loc-offscreen">Offscreen bottom local paragraph.</p>',
+        '</article>',
+      ].join(''));
+    });
+    await new Promise(resolve => localServer.listen(0, '127.0.0.1', resolve));
+    try {
+      const localOrigin = `http://127.0.0.1:${localServer.address().port}`;
+      settings.webpage.engine = 'openai-compat-local';
+      settings.webpage.displayMode = 'bilingual';
+      settings.providers.local.baseUrl = `${localOrigin}/v1`;
+      settings.providers.local.model = 'local-edge-model';
+      await saveSettings();
+
+      await page.send('Page.navigate', { url: `${localOrigin}/local-article` });
+      await until(() => evaluate(page, `location.pathname === '/local-article' && document.readyState === 'complete' && !!document.querySelector('#loc-long')`), 'local article load');
+      await until(async () => { try { return await state(); } catch { return false; } }, 'local article content script');
+      await message({ type: 'wuf:translate-page', payload: { translateOnly: true, force: true } });
+      await until(() => evaluate(page, `!!document.querySelector('#loc-long .wupage-translation')`), 'long local paragraph reassembled in DOM');
+      await sleep(120);
+      const localCheck = await evaluate(page, `(() => {
+        const linksTr = document.querySelector('#loc-links .wupage-translation') || document.querySelector('#loc-links + .wupage-translation');
+        const liTr = document.querySelector('#loc-li-link .wupage-translation');
+        const dropTr = document.querySelector('#loc-drop-marker .wupage-translation') || document.querySelector('#loc-drop-marker + .wupage-translation');
+        const mapLink = a => ({
+          href: a.getAttribute('href'),
+          text: a.textContent || '',
+          target: a.getAttribute('target') || '',
+          rel: a.getAttribute('rel') || '',
+          hasStrong: !!a.querySelector('strong'),
+          pointerEvents: getComputedStyle(a).pointerEvents,
+        });
+        return {
+          p1: document.querySelector('#loc-p1 + .wupage-translation, #loc-p1 .wupage-translation')?.textContent || '',
+          p1Code: document.querySelector('#loc-p1 + .wupage-translation code, #loc-p1 .wupage-translation code')?.textContent || '',
+          failTranslated: !!document.querySelector('#loc-fail + .wupage-translation, #loc-fail .wupage-translation'),
+          longText: document.querySelector('#loc-long .wupage-translation')?.textContent || '',
+          offscreen: !!document.querySelector('#loc-offscreen .wupage-translation, #loc-offscreen + .wupage-translation'),
+          bilingualLinks: linksTr ? [...linksTr.querySelectorAll('a[href]')].map(mapLink) : [],
+          bilingualLinksText: linksTr?.textContent || '',
+          bilingualLiLinks: liTr ? [...liTr.querySelectorAll('a[href]')].map(mapLink) : [],
+          bilingualDropLinks: dropTr ? [...dropTr.querySelectorAll('a[href]')].map(mapLink) : [],
+          bilingualDropText: dropTr?.textContent || '',
+        };
+      })()`);
+      assert.match(localCheck.p1, /本機譯:/);
+      assert.equal(localCheck.p1Code, 'inline()');
+      assert.equal(localCheck.failTranslated, false, 'Failed paragraph must not render bogus translation');
+      assert.match(localCheck.longText, /Sentence one.*Sentence four/s);
+      assert.equal(localCheck.offscreen, false, 'Offscreen paragraph must wait until scrolled into view');
+      assert.equal(localCheck.bilingualLinks.length, 4, JSON.stringify(localCheck.bilingualLinks));
+      assert.deepEqual(
+        localCheck.bilingualLinks.map(l => [l.href, l.text]),
+        [
+          ['/first-doc', '閱讀更多'],
+          ['/second-doc', '閱讀更多'],
+          ['/bold-path', '粗體指南'],
+          ['#section-anchor', '跳轉章節'],
+        ],
+      );
+      assert.equal(localCheck.bilingualLinks[2].hasStrong, true, 'Bold wrapper inside link must survive');
+      assert.equal(localCheck.bilingualLinks[2].target, '_blank');
+      assert.equal(localCheck.bilingualLinks[2].rel, 'noopener noreferrer');
+      assert.notEqual(localCheck.bilingualLinks[0].pointerEvents, 'none');
+      assert.deepEqual(localCheck.bilingualLiLinks.map(l => [l.href, l.text]), [['#what-it-is', '這是什麼']]);
+      assert.deepEqual(localCheck.bilingualDropLinks.map(l => [l.href, l.rel]), [['https://recipelab.io', 'nofollow']]);
+      assert.notEqual(localCheck.bilingualDropLinks[0].text.trim(), localCheck.bilingualDropText.trim(), 'Whole paragraph must not be swallowed into one link');
+      assert.equal(maxInFlightLocal, 1, 'Local LLM webpage translation must keep concurrency at 1');
+      assert.ok(localRequests.every(r => r.stream === false), 'Every local request must set stream: false');
+      assert.ok(localRequests.every(r => !r.usr.startsWith('{') && !r.usr.includes('---WUF-SEG---')), 'Local requests must be plain text');
+      assert.ok(localRequests.filter(r => r.usr.includes('Sentence ')).length >= 2, 'Long paragraph must split across multiple sentence requests');
+
+      // Switch to monolingual mode, re-translate (cache hit for preserved paragraphs + intact links), test click navigation & restore
+      await message({ type: 'wuf:restore-page' });
+      settings.webpage.displayMode = 'monolingual';
+      await saveSettings();
+      const requestsBeforeMonolingual = localRequests.length;
+      await message({ type: 'wuf:translate-page', payload: { translateOnly: true, force: true } });
+      await until(() => evaluate(page, `!!document.querySelector('#loc-long .wupage-translation')`), 'monolingual re-translation complete');
+      await sleep(100);
+      const monoCheck = await evaluate(page, `(() => {
+        const linksTr = document.querySelector('#loc-links .wupage-translation') || document.querySelector('#loc-links + .wupage-translation');
+        const liAnchor = document.querySelector('#loc-li-link .wupage-translation a[href="#what-it-is"]');
+        const dropTr = document.querySelector('#loc-drop-marker .wupage-translation') || document.querySelector('#loc-drop-marker + .wupage-translation');
+        const mapLink = a => ({
+          href: a.getAttribute('href'),
+          text: a.textContent || '',
+          hasStrong: !!a.querySelector('strong'),
+          pointerEvents: getComputedStyle(a).pointerEvents,
+        });
+        liAnchor?.click();
+        return {
+          hashAfterClick: location.hash,
+          links: linksTr ? [...linksTr.querySelectorAll('a[href]')].map(mapLink) : [],
+          liPointer: liAnchor ? getComputedStyle(liAnchor).pointerEvents : '',
+          dropLinks: dropTr ? [...dropTr.querySelectorAll('a[href]')].map(mapLink) : [],
+          dropText: dropTr?.textContent || '',
+        };
+      })()`);
+      assert.equal(monoCheck.links.length, 4);
+      assert.equal(monoCheck.links[2].hasStrong, true);
+      assert.notEqual(monoCheck.links[2].pointerEvents, 'none');
+      assert.notEqual(monoCheck.liPointer, 'none');
+      assert.equal(monoCheck.hashAfterClick, '#what-it-is', 'Clicking translated relative link must navigate');
+      assert.equal(monoCheck.dropLinks.length, 1);
+      assert.equal(monoCheck.dropLinks[0].href, 'https://recipelab.io');
+      assert.match(monoCheck.dropLinks[0].text, /配方實驗室/);
+      assert.notEqual(monoCheck.dropLinks[0].text.trim(), monoCheck.dropText.trim());
+      assert.equal(localRequests.length, requestsBeforeMonolingual + 1, 'Cached paragraphs must hit cache while only previously failed paragraph retries');
+
+      await message({ type: 'wuf:restore-page' });
+      const restored = await evaluate(page, `({
+        trCount: document.querySelectorAll('.wupage-translation').length,
+        replacedCount: document.querySelectorAll('.wupage-replaced-source').length,
+        origLinks: [...document.querySelectorAll('#loc-links a[href]')].map(a => [a.getAttribute('href'), a.textContent]),
+        origLiText: document.querySelector('#loc-li-link a')?.textContent || '',
+      })`);
+      assert.equal(restored.trCount, 0);
+      assert.equal(restored.replacedCount, 0);
+      assert.deepEqual(restored.origLinks, [
+        ['/first-doc', 'Read more'],
+        ['/second-doc', 'Read more'],
+        ['/bold-path', 'Bold Guide'],
+        ['#section-anchor', 'Jump section'],
+      ]);
+      assert.equal(restored.origLiText, 'What it is');
+      t.diagnostic('Real extension: bilingual + monolingual link preservation, fallback marker repair, cache hit, click navigation, and DOM restore passed.');
+    } finally {
+      localServer.closeAllConnections();
+      localServer.close();
+    }
   } catch (error) {
     error.message += '\nEdge diagnostics:\n' + diagnostics.slice(-1200); throw error;
   } finally {

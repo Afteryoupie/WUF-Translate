@@ -111,16 +111,23 @@ function ensureTranslator(): WufDomTranslator | WufWuPageTranslator {
 
       };
     },
-    translateBatch: async (texts, _signal) => {
+    translateBatch: async (texts, signal) => {
       const snapshot = await sendWufRuntimeMessage<SettingsSnapshotPayload>({ type: 'wuf:get-settings' });
       const preset = snapshot.ok ? snapshot.data.runtimeSettings.webpage
         : { engine: 'openai-compat-local' as const, targetLanguage: 'zh-TW', customModelOverride: '' };
-      const response = await sendWufRuntimeMessage<TranslationResponse>({ type: 'wuf:translate-text', request: {
-        texts, targetLanguage: preset.targetLanguage, engine: preset.engine, purpose: 'webpage',
-        modelOverride: preset.customModelOverride || undefined,
-      } });
-      if (!response.ok) throw new Error(response.error.message);
-      return response.data.translations;
+      const requestId = `dom:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+      const cancel = () => { void sendWufRuntimeMessage({ type: 'wuf:cancel-webpage-request', requestId }); };
+      signal?.throwIfAborted();
+      signal?.addEventListener('abort', cancel, { once: true });
+      try {
+        const response = await sendWufRuntimeMessage<TranslationResponse>({ type: 'wuf:translate-text', requestId, request: {
+          texts, targetLanguage: preset.targetLanguage, engine: preset.engine, purpose: 'webpage',
+          modelOverride: preset.customModelOverride || undefined,
+        } });
+        signal?.throwIfAborted();
+        if (!response.ok) throw new Error(response.error.message);
+        return response.data.translations;
+      } finally { signal?.removeEventListener('abort', cancel); }
     },
   });
   return pageTranslator;

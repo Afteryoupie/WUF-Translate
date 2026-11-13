@@ -39,6 +39,33 @@ function restoreYouTubeTitle(el: HTMLElement): boolean {
 }
 
 const renderedDom = new WeakMap<HTMLElement, string>();
+const originalChildNodes = new WeakMap<HTMLElement, ChildNode[]>();
+
+function clearElementChildren(el: HTMLElement): void {
+  if (typeof el.replaceChildren === 'function') {
+    el.replaceChildren();
+    return;
+  }
+  if ('firstChild' in el && typeof el.removeChild === 'function') {
+    while (el.firstChild) el.removeChild(el.firstChild);
+    return;
+  }
+  el.innerHTML = '';
+}
+
+function restoreSavedChildNodes(el: HTMLElement, fallbackText: string | null): void {
+  const saved = originalChildNodes.get(el);
+  if (saved && saved.length > 0) {
+    clearElementChildren(el);
+    for (const node of saved) {
+      el.appendChild(node.cloneNode(true));
+    }
+    return;
+  }
+  if (fallbackText !== null) {
+    el.textContent = fallbackText;
+  }
+}
 function domSignature(el: HTMLElement): string {
   return `${el.innerHTML ?? ''}\n${el.textContent ?? ''}`;
 }
@@ -167,7 +194,23 @@ export function mountRestoredNodes(
       const original = tagsMap.get(`<<<WUF_TAG_${wrapped[1]}>>>`);
       if (original) {
         const clone = original.cloneNode(false);
-        clone.textContent = wrapped[2];
+        let sourceCursor: Node = original;
+        let targetCursor: Node = clone;
+        while (sourceCursor.nodeType === 1) {
+          const meaningful = Array.from(sourceCursor.childNodes).filter((child) => {
+            if (child.nodeType === 8) return false;
+            if (child.nodeType === 3) return Boolean(child.textContent?.trim());
+            return true;
+          });
+          if (meaningful.length !== 1 || meaningful[0].nodeType !== 1) break;
+          const only = meaningful[0] as Element;
+          if (!/^(?:STRONG|EM|B|I|U|SMALL|MARK|SPAN)$/u.test(only.tagName)) break;
+          const wrapperClone = only.cloneNode(false);
+          targetCursor.appendChild(wrapperClone);
+          targetCursor = wrapperClone;
+          sourceCursor = only;
+        }
+        targetCursor.textContent = wrapped[2];
         container.appendChild(clone);
         continue;
       }
@@ -289,11 +332,14 @@ export function applyTranslationToElement(
   }
 
   if (displayMode === 'monolingual') {
+    if (!originalChildNodes.has(el)) {
+      originalChildNodes.set(el, Array.from(el.childNodes).map((node) => node.cloneNode(true) as ChildNode));
+    }
     if (!el.hasAttribute('data-wuf-original')) {
       el.setAttribute('data-wuf-original', el.textContent || sourceText);
     }
     el.setAttribute('data-wuf-translated', 'monolingual');
-    el.innerHTML = '';
+    clearElementChildren(el);
     mountRestoredNodes(el, cleanTranslation, tagsMap, doc);
     renderedDom.set(el, domSignature(el));
     return;
@@ -302,9 +348,7 @@ export function applyTranslationToElement(
   // Bilingual mode: keep original and append a distinct bilingual block
   if (el.getAttribute('data-wuf-translated') === 'monolingual') {
     const orig = el.getAttribute('data-wuf-original');
-    if (orig !== null) {
-      el.textContent = orig;
-    }
+    restoreSavedChildNodes(el, orig);
   }
   el.setAttribute('data-wuf-translated', 'bilingual');
 
@@ -344,10 +388,11 @@ export function restoreTranslatedDom(root: ParentNode): number {
   for (const el of modified) {
     if (restoreYouTubeTitle(el)) { restored++; continue; }
     const orig = el.getAttribute('data-wuf-original');
-    if (orig !== null) {
+    if (orig !== null || originalChildNodes.has(el)) {
       // Never restore the previous video title over content supplied by the site.
-      if (renderedDom.get(el) === domSignature(el)) el.textContent = orig;
+      if (renderedDom.get(el) === domSignature(el)) restoreSavedChildNodes(el, orig);
     }
+    originalChildNodes.delete(el);
     el.removeAttribute('data-wuf-original');
     el.removeAttribute('data-wuf-translated');
     renderedDom.delete(el);

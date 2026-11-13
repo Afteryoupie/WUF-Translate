@@ -1,18 +1,25 @@
 import type { TranslationRequest, TranslationResponse, WufLocalSecrets, WufSettings } from '../types.ts';
 import { isOpenRouter } from '../lib/provider-performance.ts';
-import { DEFAULT_LOCAL_PROFILE, DEFAULT_ONLINE_PROFILE, resolvePresetProvider } from '../lib/provider-profiles.ts';
-import { ensureLocalLlamaServer, isWatchdogLoopbackUrl, probeWatchdogEndpoint } from '../lib/watchdog-client.ts';
+import { DEFAULT_ONLINE_PROFILE, resolvePresetProvider } from '../lib/provider-profiles.ts';
 import { buildThinkingPayload, resolveChatCompletionsUrl } from '../providers/openai-compat.ts';
 import { DEFAULT_SETTINGS } from '../vendor/wupage/core/shared/defaults';
 import { translateWithSettings } from '../vendor/wupage/core/background/translation';
 import type { OpenAICompatibleConfig, ProviderConfig } from '../vendor/wupage/core/shared/types';
+import {
+  repairProtectedWebpageText,
+  translateLocalWebpage,
+  validateProtectedWebpageText,
+} from './local-webpage-translator.ts';
 
-/** Keep WUF credentials in the background; WuPage owns the translation protocol. */
+/** Keep WUF credentials in the background; route local models to WUF's plain-text pipeline. */
 export async function translateWuPage(
   request: TranslationRequest, settings: WufSettings, secrets: WufLocalSecrets, signal?: AbortSignal, bypassCache = false,
 ): Promise<TranslationResponse & { cached: number }> {
   const wu = structuredClone(DEFAULT_SETTINGS);
   const engine = request.engine;
+  if (engine === 'openai-compat-local') {
+    return await translateLocalWebpage(request, settings, secrets, signal, bypassCache);
+  }
   let provider: ProviderConfig;
   let model = '';
   let timeoutMs: number | undefined;
@@ -23,16 +30,8 @@ export async function translateWuPage(
   } else {
     const configured = resolvePresetProvider(settings, secrets, 'webpage', engine, request.modelOverride);
     model = configured.effectiveModel;
-    if (engine === 'openai-compat-local') {
-      await ensureLocalLlamaServer(configured.baseUrl, model, { apiKey: configured.apiKey });
-      signal?.throwIfAborted();
-      if (!model && isWatchdogLoopbackUrl(configured.baseUrl)) {
-        const watchdog = await probeWatchdogEndpoint(configured.baseUrl);
-        model = watchdog.currentModelId || watchdog.currentModel || '';
-      }
-    }
     const defaults = wu.providers.find((entry): entry is OpenAICompatibleConfig => entry.type === 'openai-compatible')!;
-    const defaultProfile = engine === 'openai-compat-local' ? DEFAULT_LOCAL_PROFILE : DEFAULT_ONLINE_PROFILE;
+    const defaultProfile = DEFAULT_ONLINE_PROFILE;
     const hasCustomModelParams =
       isOpenRouter(configured.baseUrl) ||
       configured.temperature !== defaultProfile.temperature ||
@@ -127,6 +126,26 @@ export async function translateWuPage(
       context: request.webpageContext, preservePlaceholders: request.preservePlaceholders,
       pageSession: request.wupageSession,
     }, { signal: effectiveSignal, persistentCache: !bypassCache });
+    if (request.preservePlaceholders) {
+      const translations = [...result.translations];
+      for (let i = 0; i < request.texts.length; i++) {
+        const sourceText = request.texts[i] ?? '';
+        if (!/⟪WUPAGE\d+⟫/u.test(sourceText)) continue;
+        const validated = validateProtectedWebpageText(sourceText, translations[i] ?? '');
+        if (validated !== undefined) {
+          translations[i] = validated;
+          continue;
+        }
+        translations[i] = await repairProtectedWebpageText(sourceText, async (fragment) => {
+          const fragmentRes = await translateWithSettings(wu, {
+            texts: [fragment], sourceLang: wu.sourceLang, targetLang: wu.targetLang, providerId: engine,
+            preservePlaceholders: false,
+          }, { signal: effectiveSignal, persistentCache: !bypassCache });
+          return fragmentRes.translations[0] ?? fragment;
+        });
+      }
+      return { ...result, translations, engine, effectiveModel: model };
+    }
     return { ...result, engine, effectiveModel: model };
   } finally {
     if (timeoutTimer !== undefined) {

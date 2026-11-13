@@ -54,6 +54,34 @@ class MockElement extends MockNode {
     return child;
   }
 
+  get firstChild() {
+    return this.childNodes[0] ?? null;
+  }
+
+  removeChild(child) {
+    const idx = this.childNodes.indexOf(child);
+    if (idx !== -1) {
+      this.childNodes.splice(idx, 1);
+      child.parentNode = null;
+    }
+    const elemIdx = this.children.indexOf(child);
+    if (elemIdx !== -1) {
+      this.children.splice(elemIdx, 1);
+    }
+    return child;
+  }
+
+  replaceChildren(...nodes) {
+    for (const child of this.childNodes) {
+      child.parentNode = null;
+    }
+    this.childNodes = [];
+    this.children = [];
+    for (const node of nodes) {
+      this.appendChild(node);
+    }
+  }
+
   querySelector(selector) {
     if (selector.startsWith('.')) {
       const cls = selector.slice(1);
@@ -486,4 +514,44 @@ test('Multi-unit translation activates sticky state on first batch and stays tra
   } finally {
     globalThis.chrome = prevChrome;
   }
+});
+
+test('Webpage Monolingual Mode preserves nested inline formatting inside links and restores original child elements', () => {
+  const doc = new MockDocument();
+  const root = new MockElement('DIV');
+  const p = new MockElement('P');
+  const leadText = new MockNode(3, 'Check ');
+  const a = new MockElement('A', 'Read guide');
+  a.setAttribute('href', '/guide');
+  a.setAttribute('target', '_blank');
+  a.setAttribute('rel', 'noopener');
+  const strong = new MockElement('STRONG', 'Read guide');
+  a.appendChild(strong);
+  const trailText = new MockNode(3, ' carefully.');
+  p.appendChild(leadText);
+  p.appendChild(a);
+  p.appendChild(trailText);
+  root.appendChild(p);
+
+  const { text, tagsMap } = extractTranslatableContent(p);
+  assert.ok(tagsMap);
+  assert.match(text, /<<<WUF_TAG_0>>>Read guide<<<WUF_END_0>>>/);
+
+  applyTranslationToElement(p, text, '請仔細查看 <<<WUF_TAG_0>>>閱讀指南<<<WUF_END_0>>>。', 'monolingual', doc, tagsMap);
+  const restoredA = p.childNodes.find(n => n.tagName === 'A');
+  assert.ok(restoredA, 'Link element must be preserved in monolingual mode');
+  assert.equal(restoredA.getAttribute('href'), '/guide');
+  assert.equal(restoredA.getAttribute('target'), '_blank');
+  assert.equal(restoredA.getAttribute('rel'), 'noopener');
+  const restoredStrong = restoredA.childNodes.find(n => n.tagName === 'STRONG');
+  assert.ok(restoredStrong, 'Inner <strong> wrapper must remain inside translated link');
+  assert.equal(restoredStrong.textContent, '閱讀指南');
+
+  restoreTranslatedDom(root);
+  const origA = p.childNodes.find(n => n.tagName === 'A');
+  assert.ok(origA, 'Original <a> element must be restored on restoreTranslatedDom');
+  assert.equal(origA.getAttribute('href'), '/guide');
+  const origStrong = origA.childNodes.find(n => n.tagName === 'STRONG');
+  assert.ok(origStrong, 'Original inner <strong> must be restored cleanly');
+  assert.equal(origStrong.textContent, 'Read guide');
 });

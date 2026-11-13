@@ -151,7 +151,7 @@ export function updatePageTranslationSettings(settings: ExtensionSettings): void
   latestSettings = settings;
   if (coordinator) return;
   const session = activeSession;
-  if (session && (session.settings.sourceLang !== settings.sourceLang || session.settings.targetLang !== settings.targetLang)) {
+  if (session && getTranslationIdentity(session.settings) !== getTranslationIdentity(settings)) {
     // Start from the saved originals, cancelling the old generation before any
     // late response can render. A hidden or never-started page stays inactive.
     preserveViewportPosition(() => { void startPageTranslation(settings, false); },
@@ -371,6 +371,7 @@ async function runBatch(session: TranslationSession, segments: TextSegment[]): P
     const data = await sendRuntimeRequest<TranslateBatchResponse>({
       type: "TRANSLATE_BATCH",
       texts: segments.map((segment) => segment.text),
+      paragraphIds: segments.map((segment) => segment.id),
       preservePlaceholders: true,
       context: buildTranslationContext(segments.map((segment) => segment.element)),
       sourceLang: session.settings.sourceLang,
@@ -411,8 +412,11 @@ async function runBatch(session: TranslationSession, segments: TextSegment[]): P
     if (error instanceof ProviderError) {
       session.firstErrorCode ??= error.errorCode;
       if (error.retryAfterMs !== undefined) session.retryAt = Date.now() + error.retryAfterMs;
-      if (["login-required", "rate-limited", "service-rejected", "permission-required",
-        "unsupported-browser", "unsupported-language", "protocol-changed"].includes(error.errorCode)) {
+      const pauseCodes = session.settings.activeProviderId === "openai-compat-local"
+        ? ["login-required", "permission-required"]
+        : ["login-required", "rate-limited", "service-rejected", "permission-required",
+          "unsupported-browser", "unsupported-language", "protocol-changed"];
+      if (pauseCodes.includes(error.errorCode)) {
         session.providerPaused = true;
         session.queue = [];
         for (const entry of session.entries.values()) {
@@ -588,11 +592,13 @@ function groupSegments(segments: TextSegment[], maxChars: number, maxItems: numb
 }
 
 function getProgressiveMaxItems(settings: ExtensionSettings): number {
+  if (settings.activeProviderId === "openai-compat-local") return 1;
   const provider = settings.providers.find((entry) => entry.id === settings.activeProviderId);
   return provider && isLlmProvider(provider) ? MAX_LLM_BATCH_ITEMS : Number.POSITIVE_INFINITY;
 }
 
 function getProgressiveChunkSize(settings: ExtensionSettings): number {
+  if (settings.activeProviderId === "openai-compat-local") return 1;
   const performance = getEffectiveProviderPerformance(settings);
   return Math.max(200, Math.min(MAX_PROGRESSIVE_CHUNK_SIZE, performance.chunkSize));
 }

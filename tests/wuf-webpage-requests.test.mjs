@@ -1,6 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildChatCompletionRequestBody, DEFAULT_SETTINGS, handleRuntimeMessage } from '../dist/wuf/index.js';
+import {
+  buildChatCompletionRequestBody,
+  DEFAULT_SETTINGS,
+  extractProtectedLinkPairs,
+  handleRuntimeMessage,
+  reassembleParagraphChunks,
+  repairProtectedWebpageText,
+  splitParagraphIntoSentenceChunks,
+  toWuPageSettings,
+  validateProtectedWebpageText,
+} from '../dist/wuf/index.js';
 
 function storage(settings = structuredClone(DEFAULT_SETTINGS)) {
   const area = data => ({
@@ -331,6 +341,418 @@ test('WuPage handles authenticated local servers without misreporting WATCHDOG_E
     assert.equal(nativeCalls, 0);
     assert.equal(seen.some(item => item.url.includes('/api/wake') || item.url.includes('/api/status')), false);
     assert.equal(seen.some(item => item.auth === 'Bearer secret-key'), true);
+  } finally {
+    globalThis.chrome = oldChrome;
+    globalThis.fetch = oldFetch;
+  }
+});
+
+test('Local LLM webpage flow uses single concurrency, plain text, and cold-start wake before translating', async () => {
+  const oldChrome = globalThis.chrome;
+  const oldFetch = globalThis.fetch;
+  const settings = storage();
+  settings.openccEnabled = false;
+  settings.webpage.engine = 'openai-compat-local';
+  settings.providers.local.baseUrl = 'http://127.0.0.1:8080/v1';
+  settings.providers.local.model = '';
+
+  const wuLocal = toWuPageSettings({
+    savedSettings: settings,
+    runtimeSettings: settings,
+    apiKeys: { online: '', local: '' },
+    activeProvider: { ...settings.providers.local, profileType: 'local', apiKey: '', effectiveModel: '', runtimeFallbackApplied: false },
+    webpageProvider: { ...settings.providers.local, profileType: 'local', apiKey: '', effectiveModel: '', runtimeFallbackApplied: false },
+    subtitleProvider: { ...settings.providers.online, profileType: 'online', apiKey: '', effectiveModel: '', runtimeFallbackApplied: false },
+  });
+  assert.equal(wuLocal.concurrency, 1);
+  assert.equal(wuLocal.chunkSize, 1);
+  assert.equal(wuLocal.providers[0].concurrency, 1);
+  assert.equal(wuLocal.providers[0].chunkSize, 1);
+
+  settings.webpage.engine = 'openai-compat-online';
+  const wuOnline = toWuPageSettings({
+    savedSettings: settings,
+    runtimeSettings: settings,
+    apiKeys: { online: '', local: '' },
+    activeProvider: { ...settings.providers.online, profileType: 'online', apiKey: '', effectiveModel: '', runtimeFallbackApplied: false },
+    webpageProvider: { ...settings.providers.online, profileType: 'online', apiKey: '', effectiveModel: '', runtimeFallbackApplied: false },
+    subtitleProvider: { ...settings.providers.online, profileType: 'online', apiKey: '', effectiveModel: '', runtimeFallbackApplied: false },
+  });
+  assert.equal(wuOnline.providers[0].concurrency, 3);
+  assert.equal(wuOnline.providers[0].chunkSize, 3200);
+  settings.webpage.engine = 'openai-compat-local';
+
+  const events = [];
+  let awake = false;
+  globalThis.fetch = async (url, init = {}) => {
+    const u = String(url);
+    events.push(u);
+    if (u.endsWith('/api/status')) {
+      return Response.json({ status: awake ? 'running' : 'sleeping', current_model_id: 'apple-intelligence-translation' });
+    }
+    if (u.endsWith('/api/wake')) {
+      awake = true;
+      return Response.json({ status: 'ok', state: 'running', current_model: 'apple-intelligence-translation' });
+    }
+    if (u.endsWith('/v1/chat/completions')) {
+      const body = JSON.parse(String(init.body));
+      assert.equal(awake, true, 'Watchdog must be woken before sending /v1/chat/completions');
+      assert.equal(body.stream, false);
+      assert.equal(body.model, 'apple-intelligence-translation');
+      const sys = body.messages[0].content;
+      const usr = body.messages.at(-1).content;
+      assert.doesNotMatch(sys, /JSON array|---WUF-SEG---/i);
+      assert.doesNotMatch(usr, /^\{.*"texts"/);
+      return Response.json({ choices: [{ message: { content: `翻譯:${usr}` } }] });
+    }
+    throw new Error(`Unexpected URL: ${u}`);
+  };
+
+  try {
+    await handleRuntimeMessage({ type: 'wuf:clear-cache' });
+    const res = await handleRuntimeMessage({
+      type: 'wuf:wupage-translate',
+      request: {
+        texts: ['First paragraph.', 'Second paragraph.'],
+        paragraphIds: ['p-1', 'p-2'],
+        targetLanguage: 'zh-TW',
+        engine: 'openai-compat-local',
+        purpose: 'webpage',
+        preservePlaceholders: true,
+      },
+    });
+    assert.equal(res.ok, true, JSON.stringify(res));
+    assert.deepEqual(res.data.translations, ['翻譯:First paragraph.', '翻譯:Second paragraph.']);
+    const wakeIdx = events.findIndex(u => u.endsWith('/api/wake'));
+    const inferIdx = events.findIndex(u => u.endsWith('/v1/chat/completions'));
+    assert.ok(wakeIdx >= 0 && inferIdx > wakeIdx, `Expected wake before inference: ${JSON.stringify(events)}`);
+  } finally {
+    globalThis.chrome = oldChrome;
+    globalThis.fetch = oldFetch;
+  }
+});
+
+test('Local LLM splits long paragraphs on sentence boundaries and reassembles by paragraph ID with marker recovery', async () => {
+  const longParagraph = [
+    'Modern local language models process short paragraphs quickly when context stays bounded and clear.',
+    'However, when a single web paragraph stretches past several hundred characters with inline code like ⟪WUPAGE0⟫, sending the entire block together risks slow latency or dropped markers.',
+    'Splitting along natural sentence boundaries lets each piece translate reliably in plain text.',
+    'Finally, code reassembles every translated sentence in exact paragraph order using the original paragraph ID.',
+  ].join(' ');
+
+  const chunks = splitParagraphIntoSentenceChunks(longParagraph, { paragraphId: 'para-42', maxChunkChars: 160 });
+  assert.ok(chunks.length >= 3, `Expected >= 3 sentence chunks, got ${chunks.length}`);
+  assert.ok(chunks.every(chunk => chunk.paragraphId === 'para-42'));
+  assert.equal(
+    chunks.some(chunk => chunk.coreText.includes('⟪WUPAGE0⟫')),
+    true,
+    'Protected placeholder must never be split across sentence chunks',
+  );
+  assert.equal(
+    chunks.map(c => c.prefix + c.coreText + c.suffix).join(''),
+    longParagraph,
+    'Chunk offsets must preserve exact paragraph boundaries',
+  );
+  assert.throws(
+    () => reassembleParagraphChunks('wrong-id', chunks, chunks.map(c => c.coreText)),
+    /alignment mismatch/,
+  );
+
+  const oldChrome = globalThis.chrome;
+  const oldFetch = globalThis.fetch;
+  const settings = storage();
+  settings.openccEnabled = false;
+  settings.webpage.engine = 'openai-compat-local';
+  settings.providers.local.baseUrl = 'http://127.0.0.1:18090/v1';
+  settings.providers.local.model = 'local-sentence-model';
+
+  const seenRequests = [];
+  globalThis.fetch = async (url, init = {}) => {
+    if (String(url).endsWith('/v1/models')) {
+      return Response.json({ object: 'list', data: [{ id: 'local-sentence-model' }] });
+    }
+    if (String(url).endsWith('/v1/chat/completions')) {
+      const body = JSON.parse(String(init.body));
+      const usr = body.messages.at(-1).content;
+      seenRequests.push(usr);
+      // Simulate the local model dropping ⟪WUPAGE0⟫ on the chunk containing it, then succeeding on prose fragments.
+      if (usr.includes('⟪WUPAGE0⟫')) {
+        return Response.json({ choices: [{ message: { content: '遺漏標記的整句翻譯' } }] });
+      }
+      return Response.json({ choices: [{ message: { content: `中(${usr})` } }] });
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  try {
+    await handleRuntimeMessage({ type: 'wuf:clear-cache' });
+    const res = await handleRuntimeMessage({
+      type: 'wuf:wupage-translate',
+      request: {
+        texts: [longParagraph],
+        paragraphIds: ['para-42'],
+        targetLanguage: 'zh-TW',
+        engine: 'openai-compat-local',
+        purpose: 'webpage',
+        preservePlaceholders: true,
+      },
+    });
+    assert.equal(res.ok, true, JSON.stringify(res));
+    assert.equal(res.data.translations.length, 1);
+    assert.match(res.data.translations[0], /⟪WUPAGE0⟫/);
+    assert.ok(seenRequests.length >= 3, 'Expected multi-chunk plain-text requests plus fragment recovery');
+  } finally {
+    globalThis.chrome = oldChrome;
+    globalThis.fetch = oldFetch;
+  }
+});
+
+test('Local LLM webpage cache isolates by endpoint, model, language, prompt, and context without losing completed paragraphs on partial failure', async () => {
+  const oldChrome = globalThis.chrome;
+  const oldFetch = globalThis.fetch;
+  const settings = storage();
+  settings.openccEnabled = false;
+  settings.webpage.engine = 'openai-compat-local';
+  settings.providers.local.baseUrl = 'http://127.0.0.1:18091/v1';
+  settings.providers.local.model = 'local-cache-v1';
+
+  let calls = 0;
+  let failSecond = true;
+  globalThis.fetch = async (url, init = {}) => {
+    if (String(url).endsWith('/v1/models')) {
+      return Response.json({ object: 'list', data: [{ id: 'local-cache-v1' }] });
+    }
+    if (String(url).endsWith('/v1/chat/completions')) {
+      const body = JSON.parse(String(init.body));
+      const usr = body.messages.at(-1).content;
+      if (usr === 'Bad second paragraph' && failSecond) {
+        return new Response('Internal server error', { status: 500 });
+      }
+      calls++;
+      return Response.json({ choices: [{ message: { content: `譯${calls}:${usr}` } }] });
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  try {
+    await handleRuntimeMessage({ type: 'wuf:clear-cache' });
+    const reqOne = { texts: ['Good first paragraph'], paragraphIds: ['p-1'], targetLanguage: 'zh-TW', engine: 'openai-compat-local', purpose: 'webpage', preservePlaceholders: true };
+    const reqTwo = { texts: ['Bad second paragraph'], paragraphIds: ['p-2'], targetLanguage: 'zh-TW', engine: 'openai-compat-local', purpose: 'webpage', preservePlaceholders: true };
+
+    const okFirst = await handleRuntimeMessage({ type: 'wuf:wupage-translate', request: reqOne });
+    const badSecond = await handleRuntimeMessage({ type: 'wuf:wupage-translate', request: reqTwo });
+    assert.equal(okFirst.ok, true);
+    assert.equal(badSecond.ok, false);
+
+    // Retry both: paragraph 1 comes from cache (calls stays unchanged), paragraph 2 now succeeds.
+    failSecond = false;
+    const callsBeforeRetry = calls;
+    const retryFirst = await handleRuntimeMessage({ type: 'wuf:wupage-translate', request: reqOne });
+    const retrySecond = await handleRuntimeMessage({ type: 'wuf:wupage-translate', request: reqTwo });
+    assert.equal(retryFirst.ok, true);
+    assert.equal(retryFirst.data.cached, 1);
+    assert.equal(retrySecond.ok, true);
+    assert.equal(calls, callsBeforeRetry + 1);
+
+    // Changing endpoint, model, targetLanguage, sourceLanguage, or systemPrompt must invalidate cache.
+    for (const mutate of [
+      () => { settings.providers.local.model = 'local-cache-v2'; },
+      () => { settings.providers.local.systemPrompt = 'Use concise technical Chinese.'; },
+      () => { reqOne.targetLanguage = 'ja'; },
+      () => { reqOne.sourceLanguage = 'en'; },
+      () => { settings.providers.local.baseUrl = 'http://127.0.0.1:18092/v1'; },
+    ]) {
+      mutate();
+      const before = calls;
+      const r = await handleRuntimeMessage({ type: 'wuf:wupage-translate', request: reqOne });
+      assert.equal(r.ok, true, JSON.stringify(r));
+      assert.equal(calls, before + 1);
+    }
+  } finally {
+    globalThis.chrome = oldChrome;
+    globalThis.fetch = oldFetch;
+  }
+});
+
+test('Local LLM webpage translation cancels cleanly during cold start and mid-paragraph sentence chunks', async () => {
+  const oldChrome = globalThis.chrome;
+  const oldFetch = globalThis.fetch;
+  const settings = storage();
+  settings.openccEnabled = false;
+  settings.webpage.engine = 'openai-compat-local';
+  settings.providers.local.baseUrl = 'http://127.0.0.1:8080/v1';
+  settings.providers.local.model = 'cold-model';
+
+  const sender = { tab: { id: 91 }, frameId: 0, documentId: 'local-doc-1' };
+  try {
+    // 1. Cancel during cold-start wake
+    let wakeStarted;
+    let releaseWake;
+    const wakeReady = new Promise(resolve => { wakeStarted = resolve; });
+    let inferenceCalls = 0;
+    globalThis.fetch = async (url, init = {}) => {
+      const u = String(url);
+      if (u.endsWith('/api/status')) {
+        return Response.json({ status: 'sleeping' });
+      }
+      if (u.includes('/api/wake') || u.includes('/api/switch')) {
+        wakeStarted();
+        return new Promise((resolve, reject) => {
+          releaseWake = () => resolve(Response.json({ status: 'ok', state: 'running' }));
+          init.signal?.addEventListener('abort', () => reject(init.signal.reason), { once: true });
+        });
+      }
+      inferenceCalls++;
+      return Response.json({ choices: [{ message: { content: 'unexpected' } }] });
+    };
+
+    const wakeReq = handleRuntimeMessage({
+      type: 'wuf:wupage-translate',
+      requestId: 'cold-cancel',
+      request: { texts: ['Wake test'], targetLanguage: 'zh-TW', engine: 'openai-compat-local', purpose: 'webpage', preservePlaceholders: true },
+    }, sender);
+    await wakeReady;
+    await handleRuntimeMessage({ type: 'wuf:cancel-webpage-request', requestId: 'cold-cancel' }, sender);
+    const wakeRes = await wakeReq;
+    assert.equal(wakeRes.ok, false);
+    assert.equal(inferenceCalls, 0);
+    releaseWake?.();
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    // 2. Cancel on second chunk of a long paragraph
+    await handleRuntimeMessage({ type: 'wuf:clear-cache' });
+    let chunkTwoStarted;
+    const chunkTwoReady = new Promise(resolve => { chunkTwoStarted = resolve; });
+    let chunkTwoSignal;
+    let completionCount = 0;
+    const twoChunkText = `${'First long sentence fills more than half of the threshold for splitting into pieces. '.repeat(5)}Second long sentence arrives right after the boundary and blocks in flight.`;
+    globalThis.fetch = async (url, init = {}) => {
+      const u = String(url);
+      if (u.endsWith('/api/status')) {
+        return Response.json({ status: 'running', current_model_id: 'cold-model' });
+      }
+      if (u.endsWith('/v1/chat/completions')) {
+        completionCount++;
+        if (completionCount === 1) {
+          return Response.json({ choices: [{ message: { content: '第一句譯文。' } }] });
+        }
+        chunkTwoSignal = init.signal;
+        chunkTwoStarted();
+        return new Promise((_resolve, reject) => {
+          init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true });
+        });
+      }
+      throw new Error(`Unexpected URL: ${u}`);
+    };
+
+    const midReq = handleRuntimeMessage({
+      type: 'wuf:wupage-translate',
+      requestId: 'mid-cancel',
+      request: { texts: [twoChunkText], paragraphIds: ['p-mid'], targetLanguage: 'zh-TW', engine: 'openai-compat-local', purpose: 'webpage', preservePlaceholders: true },
+    }, sender);
+    await chunkTwoReady;
+    await handleRuntimeMessage({ type: 'wuf:cancel-webpage-request', requestId: 'mid-cancel' }, sender);
+    assert.equal(chunkTwoSignal.aborted, true);
+    const midRes = await midReq;
+    assert.equal(midRes.ok, false);
+  } finally {
+    globalThis.chrome = oldChrome;
+    globalThis.fetch = oldFetch;
+  }
+});
+
+test('Local LLM webpage flow preserves paired link markers, validates edge cases, repairs dropped markers, and hits cache', async () => {
+  const singleLinkSource = 'See ⟪WUPAGE0⟫the guide⟪WUPAGE1⟫ to finish setup.';
+  const multiLinkSource = 'Compare ⟪WUPAGE0⟫Read more⟪WUPAGE1⟫ and ⟪WUPAGE2⟫Read more⟪WUPAGE3⟫ alongside ⟪WUPAGE4⟫.';
+
+  assert.deepEqual(
+    extractProtectedLinkPairs(singleLinkSource).map(p => [p.openMarker, p.closeMarker]),
+    [['⟪WUPAGE0⟫', '⟪WUPAGE1⟫']],
+  );
+  assert.deepEqual(
+    extractProtectedLinkPairs(multiLinkSource).map(p => [p.openMarker, p.closeMarker]),
+    [['⟪WUPAGE0⟫', '⟪WUPAGE1⟫'], ['⟪WUPAGE2⟫', '⟪WUPAGE3⟫']],
+  );
+  assert.deepEqual(extractProtectedLinkPairs('Run ⟪WUPAGE0⟫ and ⟪WUPAGE1⟫ now.'), []);
+
+  // Validation rejects dropped, swapped, emptied, and prose-swallowing links
+  assert.equal(validateProtectedWebpageText(singleLinkSource, '請參閱 ⟪WUPAGE0⟫官方指南 以完成設定。'), undefined);
+  assert.equal(validateProtectedWebpageText(singleLinkSource, '請參閱 ⟪WUPAGE1⟫官方指南⟪WUPAGE0⟫ 以完成設定。'), undefined);
+  assert.equal(validateProtectedWebpageText(singleLinkSource, '請參閱 ⟪WUPAGE0⟫   ⟪WUPAGE1⟫ 以完成設定。'), undefined);
+  assert.equal(validateProtectedWebpageText(singleLinkSource, '⟪WUPAGE0⟫請參閱官方指南以完成設定⟪WUPAGE1⟫'), undefined);
+  assert.equal(
+    validateProtectedWebpageText(singleLinkSource, '請參閱 ⟪WUPAGE0⟫指南⟪WUPAGE1⟫ 以完成設定。'),
+    '請參閱 ⟪WUPAGE0⟫指南⟪WUPAGE1⟫ 以完成設定。',
+  );
+
+  // Repair restores dropped link markers cleanly in prose + link fragments
+  const repaired = await repairProtectedWebpageText(singleLinkSource, async fragment => {
+    if (fragment === 'See') return '請參閱';
+    if (fragment === 'the guide') return '指南';
+    if (fragment === 'to finish setup.') return '以完成設定。';
+    return fragment;
+  });
+  assert.equal(repaired, '請參閱 ⟪WUPAGE0⟫指南⟪WUPAGE1⟫ 以完成設定。');
+
+  // Sentence splitter keeps each paired link sentence separate rather than merging multiple link sentences
+  const twoLinkSentences = 'First sentence checks ⟪WUPAGE0⟫Website⟪WUPAGE1⟫ for info. Second sentence checks ⟪WUPAGE2⟫Releases⟪WUPAGE3⟫ today.';
+  const chunks = splitParagraphIntoSentenceChunks(twoLinkSentences, { paragraphId: 'p-links', maxChunkChars: 350 });
+  assert.equal(chunks.length, 2);
+
+  // End-to-end runtime message flow: dropped marker triggers fragment repair and second run hits cache
+  const oldChrome = globalThis.chrome;
+  const oldFetch = globalThis.fetch;
+  storage(structuredClone(DEFAULT_SETTINGS));
+  const sender = { tab: { id: 88 }, frameId: 0, documentId: 'doc-links' };
+  let completionCalls = 0;
+
+  try {
+    await handleRuntimeMessage({ type: 'wuf:clear-cache' });
+    const readmeSource = '⟪WUPAGE0⟫Recipe Lab Studio⟪WUPAGE1⟫ on iPhone handles the full camera workflow.';
+    globalThis.fetch = async (url, init = {}) => {
+      const u = String(url);
+      if (u.endsWith('/api/status')) {
+        return Response.json({ status: 'running', current_model_id: 'link-test-model' });
+      }
+      if (u.endsWith('/v1/chat/completions')) {
+        completionCalls++;
+        const body = JSON.parse(String(init.body || '{}'));
+        const userText = String(body.messages.at(-1)?.content ?? '');
+        if (userText.includes('⟪WUPAGE1⟫') && userText.includes('handles the full camera workflow')) {
+          // Simulate model dropping closing marker ⟪WUPAGE1⟫
+          return Response.json({ choices: [{ message: { content: '⟪WUPAGE0⟫Recipe Lab Studio在iPhone上處理完整相機流程。' } }] });
+        }
+        if (userText === 'Recipe Lab Studio') {
+          return Response.json({ choices: [{ message: { content: '配方實驗室工作室' } }] });
+        }
+        return Response.json({ choices: [{ message: { content: '在 iPhone 上處理完整的相機工作流程。' } }] });
+      }
+      throw new Error(`Unexpected URL: ${u}`);
+    };
+
+    const req = {
+      type: 'wuf:wupage-translate',
+      requestId: 'links-first',
+      request: {
+        texts: [readmeSource],
+        paragraphIds: ['p-readme'],
+        targetLanguage: 'zh-TW',
+        engine: 'openai-compat-local',
+        purpose: 'webpage',
+        preservePlaceholders: true,
+      },
+    };
+    const res1 = await handleRuntimeMessage(req, sender);
+    assert.equal(res1.ok, true, JSON.stringify(res1));
+    assert.equal(res1.data.translations[0], '⟪WUPAGE0⟫配方實驗室工作室⟪WUPAGE1⟫ 在 iPhone 上處理完整的相機工作流程。');
+    assert.equal(completionCalls, 3);
+
+    const callsAfterFirst = completionCalls;
+    const res2 = await handleRuntimeMessage({ ...req, requestId: 'links-cached' }, sender);
+    assert.equal(res2.ok, true);
+    assert.equal(res2.data.cached, 1);
+    assert.equal(res2.data.translations[0], res1.data.translations[0]);
+    assert.equal(completionCalls, callsAfterFirst);
   } finally {
     globalThis.chrome = oldChrome;
     globalThis.fetch = oldFetch;

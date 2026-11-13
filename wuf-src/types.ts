@@ -148,6 +148,7 @@ export interface TranslationRequest {
   openccVariant?: OpenCCVariant;
   webpageContext?: string;
   preservePlaceholders?: boolean;
+  paragraphIds?: string[];
   wupageSession?: { id: string; documentKey: string };
 }
 

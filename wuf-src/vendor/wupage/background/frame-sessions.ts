@@ -50,7 +50,9 @@ export class FrameSessionManager {
       });
     });
     this.api.storage?.onChanged?.addListener((changes, area) => {
-      if (area !== "sync" || !changes[SETTINGS_KEY]?.newValue) return;
+      const syncChanged = area === "sync" && (Boolean(changes[SETTINGS_KEY]?.newValue) || Boolean(changes.wufSettings?.newValue));
+      const secretChanged = area === "local" && Boolean(changes.wufSecrets?.newValue);
+      if (!syncChanged && !secretChanged) return;
       void this.readSettings().then(settings => {
         for (const [id, pending] of this.tabs) void pending.then(tab => this.updateSettings(id, tab, settings));
       });
@@ -187,8 +189,11 @@ export class FrameSessionManager {
     });
     try { signal.throwIfAborted(); return await run(signal); }
     catch (error) {
+      const pauseCodes = tab.settings.activeProviderId === "openai-compat-local"
+        ? ["login-required", "permission-required"]
+        : ["login-required", "rate-limited", "service-rejected", "permission-required", "protocol-changed"];
       if (!signal.aborted && tab.id === generation && error instanceof ProviderError
-        && ["login-required", "rate-limited", "service-rejected", "permission-required", "protocol-changed"].includes(error.errorCode)) {
+        && pauseCodes.includes(error.errorCode)) {
         await this.pauseProvider(tab, error);
       }
       throw error;
@@ -363,7 +368,10 @@ export class FrameSessionManager {
     }
   }
   private pump(tab: TabSession): void {
-    while (tab.running < 2 && tab.queue.length) {
+    const limit = tab.settings.activeProviderId === "openai-compat-local"
+      ? Math.max(1, Math.min(2, tab.settings.concurrency || 1))
+      : 2;
+    while (tab.running < limit && tab.queue.length) {
       let index = tab.queue.findIndex(item => item.frameId !== tab.lastFrame);
       if (index < 0) index = 0;
       const [entry] = tab.queue.splice(index, 1); tab.lastFrame = entry.frameId; tab.running++; entry.run();

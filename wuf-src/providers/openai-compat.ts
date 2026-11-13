@@ -214,6 +214,9 @@ export async function translateWithOpenAICompat(
     targetLanguage,
     platform,
   });
+  if (provider.profileType === 'local' && body.stream === undefined) {
+    body.stream = false;
+  }
 
   if (provider.profileType === 'local') {
     try {

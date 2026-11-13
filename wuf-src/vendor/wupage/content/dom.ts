@@ -73,6 +73,7 @@ type RenderMode = "block" | "inline" | "code-comment";
 
 interface ProtectedToken {
   marker: string;
+  closeMarker?: string;
   node: Element;
   sourceNode: Element;
   sourceHidden?: { hadClassAttribute: boolean };
@@ -380,6 +381,7 @@ function stableReplacementSource(nodes: TrackedNode[]): HTMLElement | undefined 
   if (parents.size !== 1) return undefined;
   const source = parents.values().next().value;
   if (!(source instanceof HTMLElement) || !source.isConnected || !source.matches("span,p,div")) return undefined;
+  if (source.closest("a[href]")) return undefined;
   if (source.matches("[role],[tabindex],[contenteditable],[slot]")
     || [...source.attributes].some((attribute) => attribute.name.startsWith("on"))) return undefined;
   if ([...source.childNodes].some((node) => node instanceof Element && !node.matches(`.${TRANSLATION_CLASS}`))) {
@@ -655,8 +657,9 @@ export function renderTranslations(
   displayMode: TranslationDisplayMode = "bilingual"
 ): void {
   translations = translations.flatMap(({ id, text }) => {
-    if (!protectedTokensById.has(id)) return [{ id, text }];
-    const normalized = normalizeProtectedText(sourceTextById.get(id) ?? "", text);
+    const tokens = protectedTokensById.get(id);
+    if (!tokens) return [{ id, text }];
+    const normalized = validateProtectedDomTranslation(tokens, sourceTextById.get(id) ?? "", text);
     if (normalized !== undefined) return [{ id, text: normalized }];
     // Keep the original visible if an unvalidated result reaches the renderer.
     // Formula/code identity cannot safely be reconstructed from occurrence order.
@@ -1295,6 +1298,7 @@ function groupTextSegments(
     const { text, tokens } = getReadableBlockText(block, visibility);
     if (
       groupNodes.length < 2 &&
+      tokens.length === 0 &&
       text === nodeText &&
       !isLegacyScientificProseBlock(block) &&
       !block.matches(`summary, label, li, ${X_POST_TEXT_SELECTOR}, ${YOUTUBE_COMMENT_SELECTOR}`)
@@ -1755,27 +1759,148 @@ function getReadableBlockText(
     .forEach((node) => node.remove());
 
   const tokens: ProtectedToken[] = [];
+  let markerIndex = 0;
+
+  // Pass 1: Protect atomic inline code/math/citation tokens first so single-code links
+  // like <a href="#v"><code>v1.0</code></a> remain indivisible and aren't wrapped twice.
   protectedCandidates.forEach(({ element, sourceElement }) => {
     if (!clone.contains(element)) return;
     if (!sourceElement) return;
     if (!sourceElement.matches("code,kbd,samp")
       && !isScientificMathImage(sourceElement) && !isScientificCitation(sourceElement)) return;
     if (!visibility.isElementVisuallyRendered(sourceElement)) return;
-    if (!isProtectedInlineElement(sourceElement)) return;
+    if (!isProtectedInlineElement(sourceElement, block)) return;
     const protectedElement = getProtectedRenderElement(sourceElement);
-    const marker = `⟪WUPAGE${tokens.length}⟫`;
+    const cloneTarget = protectedElement !== sourceElement ? (element.closest("a") ?? element) : element;
+    const marker = `⟪WUPAGE${markerIndex++}⟫`;
+    const clonedNode = protectedElement.cloneNode(true) as Element;
+    stripClonedProtectedIds(clonedNode);
     tokens.push({
       marker,
-      node: protectedElement.cloneNode(true) as Element,
+      node: clonedNode,
       sourceNode: protectedElement
     });
-    element.replaceWith(document.createTextNode(` ${marker} `));
+    cloneTarget.replaceWith(document.createTextNode(` ${marker} `));
+  });
+
+  // Pass 2: Protect translatable a[href] links with paired open/close markers so link
+  // text can be translated while href/target/rel and inner formatting stay code-owned.
+  protectedCandidates.forEach(({ element, sourceElement }) => {
+    if (!clone.contains(element)) return;
+    if (!sourceElement || !sourceElement.matches("a[href]")) return;
+    if (!sourceElement.getAttribute("href")?.trim()) return;
+    if (!visibility.isElementVisuallyRendered(sourceElement)) return;
+    if (!isProtectedInlineElement(sourceElement, block)) return;
+    const linkText = normalizeText(element.textContent ?? "");
+    if (!linkText) return;
+    const openMarker = `⟪WUPAGE${markerIndex++}⟫`;
+    const closeMarker = `⟪WUPAGE${markerIndex++}⟫`;
+    tokens.push({
+      marker: openMarker,
+      closeMarker,
+      node: buildProtectedLinkShell(sourceElement),
+      sourceNode: sourceElement
+    });
+    element.replaceWith(document.createTextNode(` ${openMarker}${linkText}${closeMarker} `));
   });
 
   return {
     text: normalizeText(clone.textContent ?? ""),
     tokens
   };
+}
+
+function stripClonedProtectedIds(root: Element): void {
+  root.removeAttribute("id");
+  root.querySelectorAll("[id]").forEach((node) => node.removeAttribute("id"));
+}
+
+function buildProtectedLinkShell(sourceElement: Element): Element {
+  const shell = sourceElement.cloneNode(false) as Element;
+  stripClonedProtectedIds(shell);
+  let sourceCursor: Element = sourceElement;
+  let targetCursor: Element = shell;
+  while (true) {
+    const meaningfulChildren = Array.from(sourceCursor.childNodes).filter((child) => {
+      if (child.nodeType === Node.COMMENT_NODE) return false;
+      if (child.nodeType === Node.TEXT_NODE) return Boolean(child.textContent?.trim());
+      return true;
+    });
+    if (meaningfulChildren.length !== 1) break;
+    const onlyChild = meaningfulChildren[0];
+    if (!(onlyChild instanceof Element)) break;
+    if (!onlyChild.matches("strong,em,b,i,u,small,mark,span") || onlyChild.matches(`.${TRANSLATION_CLASS}`)) break;
+    const clonedWrapper = onlyChild.cloneNode(false) as Element;
+    stripClonedProtectedIds(clonedWrapper);
+    targetCursor.append(clonedWrapper);
+    targetCursor = clonedWrapper;
+    sourceCursor = onlyChild;
+  }
+  return shell;
+}
+
+function validateProtectedDomTranslation(
+  tokens: ProtectedToken[],
+  sourceText: string,
+  translatedText: string
+): string | undefined {
+  const normalized = normalizeProtectedText(sourceText, translatedText);
+  if (normalized === undefined) return undefined;
+
+  const paired = tokens.filter((token): token is ProtectedToken & { closeMarker: string } => Boolean(token.closeMarker));
+  if (!paired.length) return normalized;
+
+  const getPairedSpans = (text: string): Array<{ token: ProtectedToken & { closeMarker: string }; start: number; end: number; contentStart: number }> | undefined => {
+    const spans: Array<{ token: ProtectedToken & { closeMarker: string }; start: number; end: number; contentStart: number }> = [];
+    for (const token of paired) {
+      const start = text.indexOf(token.marker);
+      const end = text.indexOf(token.closeMarker);
+      if (start === -1 || end <= start) return undefined;
+      const contentStart = start + token.marker.length;
+      if (!text.slice(contentStart, end).trim()) return undefined;
+      spans.push({ token, start, end, contentStart });
+    }
+    spans.sort((a, b) => a.start - b.start);
+    for (let i = 1; i < spans.length; i += 1) {
+      if (spans[i].start < spans[i - 1].end) return undefined;
+    }
+    return spans;
+  };
+
+  const sourceSpans = getPairedSpans(sourceText);
+  const translatedSpans = getPairedSpans(normalized);
+  if (!sourceSpans || !translatedSpans) return undefined;
+
+  const stripSpansAndMarkers = (
+    text: string,
+    spans: Array<{ start: number; end: number; token: ProtectedToken & { closeMarker: string } }>
+  ): string => {
+    let result = "";
+    let cursor = 0;
+    for (const span of spans) {
+      result += text.slice(cursor, span.start);
+      cursor = span.end + span.token.closeMarker.length;
+    }
+    result += text.slice(cursor);
+    return result.replace(/⟪WUPAGE\d+⟫/g, " ");
+  };
+
+  const sourceOutside = stripSpansAndMarkers(sourceText, sourceSpans);
+  const translatedOutside = stripSpansAndMarkers(normalized, translatedSpans);
+  if (/[\p{L}\p{N}]/u.test(sourceOutside) && !/[\p{L}\p{N}]/u.test(translatedOutside)) {
+    return undefined;
+  }
+
+  for (const token of tokens) {
+    if (token.closeMarker) continue;
+    const srcIdx = sourceText.indexOf(token.marker);
+    const trIdx = normalized.indexOf(token.marker);
+    const srcOwner = sourceSpans.find((span) => srcIdx >= span.contentStart && srcIdx < span.end)?.token.marker;
+    const trOwner = translatedSpans.find((span) => trIdx >= span.contentStart && trIdx < span.end)?.token.marker;
+    if (srcOwner !== trOwner) return undefined;
+  }
+
+  return normalized;
 }
 
 function removeUnrenderedCloneText(
@@ -1808,26 +1933,59 @@ function renderProtectedText(container: Element, id: string, text: string): void
   }
 
   const tokenByMarker = new Map(tokens.map((token) => [token.marker, token]));
-  const pattern = new RegExp(tokens.map((token) => escapeRegExp(token.marker)).join("|"), "g");
-  const normalizedText = text;
+  const openMarkers = tokens.map((token) => token.marker);
+  renderProtectedContent(container, tokenByMarker, openMarkers, text);
+}
+
+function renderProtectedContent(
+  container: Element,
+  tokenByMarker: Map<string, ProtectedToken>,
+  openMarkers: string[],
+  text: string
+): void {
+  if (!openMarkers.length) {
+    if (text) container.append(document.createTextNode(text));
+    return;
+  }
+  const pattern = new RegExp(openMarkers.map((marker) => escapeRegExp(marker)).join("|"), "g");
   let cursor = 0;
-  for (const match of normalizedText.matchAll(pattern)) {
+  while (cursor < text.length) {
+    pattern.lastIndex = cursor;
+    const match = pattern.exec(text);
+    if (!match) break;
     const marker = match[0];
-    const index = match.index ?? 0;
-    if (index > cursor) container.append(document.createTextNode(normalizedText.slice(cursor, index)));
+    const index = match.index;
+    if (index > cursor) container.append(document.createTextNode(text.slice(cursor, index)));
     const token = tokenByMarker.get(marker);
+    if (token?.closeMarker) {
+      const closeIndex = text.indexOf(token.closeMarker, index + marker.length);
+      if (closeIndex > index) {
+        const clonedLink = token.node.cloneNode(true) as Element;
+        let host: Element = clonedLink;
+        while (host.firstElementChild) host = host.firstElementChild;
+        const innerText = text.slice(index + marker.length, closeIndex).trim();
+        renderProtectedContent(host, tokenByMarker, openMarkers, innerText);
+        container.append(clonedLink);
+        cursor = closeIndex + token.closeMarker.length;
+        continue;
+      }
+    }
     if (token) container.append(token.node.cloneNode(true));
     cursor = index + marker.length;
   }
-  if (cursor < normalizedText.length) container.append(document.createTextNode(normalizedText.slice(cursor)));
+  if (cursor < text.length) container.append(document.createTextNode(text.slice(cursor)));
 }
 
-function isProtectedInlineElement(element: Element): boolean {
+function isProtectedInlineElement(element: Element, block?: Element): boolean {
   if (element.closest("pre, .highlight, .example-wrap, .blob-code, .react-code-text")) return false;
   if (isCompactControlText(element)) return true;
   if (legacyScientificProseBlock(element)) return true;
   const div = element.closest("div");
-  return Boolean(element.closest(`li,${SEMANTIC_TEXT_BLOCK_SELECTOR}`) || (div && isDivProseBlock(div)));
+  return Boolean(
+    element.closest(`li,label,summary,${SEMANTIC_TEXT_BLOCK_SELECTOR}`)
+    || (div && isDivProseBlock(div))
+    || (block && findGroupingBlock(element) === block)
+  );
 }
 
 function getProtectedRenderElement(element: Element): Element {
@@ -1876,7 +2034,7 @@ function insertBlockTranslation(block: Element, translation: Element): void {
     block.append(translation);
     return;
   }
-  if (block.matches(`li, ${YOUTUBE_COMMENT_SELECTOR}`)) {
+  if (block.matches(`a[href], li, ${YOUTUBE_COMMENT_SELECTOR}`)) {
     block.append(translation);
     return;
   }
