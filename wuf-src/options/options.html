@@ -200,7 +200,16 @@
               </label>
               <label class="wuf-field">
                 <span data-wuf-i18n="options.targetLanguageLabel">目標語言</span>
-                <input type="text" id="wuf-webpage-target-lang" placeholder="zh-TW" />
+                <select id="wuf-webpage-target-lang">
+                  <option value="zh-TW">繁體中文 (zh-TW)</option>
+                  <option value="zh-CN">简体中文 (zh-CN)</option>
+                  <option value="en">English (en)</option>
+                  <option value="ja">日本語 (ja)</option>
+                  <option value="ko">한국어 (ko)</option>
+                  <option value="es">Español (es)</option>
+                  <option value="fr">Français (fr)</option>
+                  <option value="de">Deutsch (de)</option>
+                </select>
               </label>
             </div>
             <div class="wuf-grid-2">
@@ -273,11 +282,21 @@
                   <option value="openai-compat-local" data-wuf-i18n="engine.openaiCompatLocal"></option>
                   <option value="openai-compat-online" data-wuf-i18n="engine.openaiCompatOnline"></option>
                   <option value="google-translate" data-wuf-i18n="engine.googleTranslate"></option>
+                  <option value="microsoft-translate">Microsoft Translator</option>
                 </select>
               </label>
               <label class="wuf-field">
                 <span data-wuf-i18n="options.targetLanguageLabel">目標語言</span>
-                <input type="text" id="wuf-subtitle-target-lang" placeholder="zh-TW" />
+                <select id="wuf-subtitle-target-lang">
+                  <option value="zh-TW">繁體中文 (zh-TW)</option>
+                  <option value="zh-CN">简体中文 (zh-CN)</option>
+                  <option value="en">English (en)</option>
+                  <option value="ja">日本語 (ja)</option>
+                  <option value="ko">한국어 (ko)</option>
+                  <option value="es">Español (es)</option>
+                  <option value="fr">Français (fr)</option>
+                  <option value="de">Deutsch (de)</option>
+                </select>
               </label>
             </div>
             <label class="wuf-field">
@@ -336,62 +355,6 @@
             </label>
           </div>
         </section>
-
-        <section class="wuf-section">
-          <h3 data-wuf-i18n="options.decisionSectionTitle">字幕情境與決策模型</h3>
-          <div class="wuf-form-stack">
-            <div class="wuf-grid-2">
-              <label class="wuf-field">
-                <span data-wuf-i18n="options.decisionModeLabel">決策模型來源</span>
-                <select id="wuf-subtitle-decision-mode" aria-describedby="wuf-decision-help">
-                  <option value="laya" data-wuf-i18n="options.decisionMode.laya">
-                    本機 Laya 決策模型 (/v1/systemone)
-                  </option>
-                  <option value="custom" data-wuf-i18n="options.decisionMode.custom">
-                    自訂決策模型 (Custom Decision Model)
-                  </option>
-                  <option value="off" data-wuf-i18n="options.decisionMode.off">
-                    不使用決策模型（保留本地字幕保護）
-                  </option>
-                </select>
-              </label>
-              <label class="wuf-field" id="wuf-laya-endpoint-group">
-                <span data-wuf-i18n="options.layaEndpointLabel">Laya 決策服務端點 URL</span>
-                <input
-                  type="url"
-                  id="wuf-subtitle-laya-endpoint"
-                  placeholder="http://127.0.0.1:8080/v1/systemone"
-                />
-              </label>
-            </div>
-            <div id="wuf-decision-help" class="wuf-decision-help">
-              <p data-wuf-i18n="options.decisionHelp.laya">Laya：從影片標題與開頭字幕判斷主題，為中文翻譯提供攝影、汽車、園藝的詞義提示。每片分類後快取，每句只加入用得到的少量詞義；判斷不明確時沿用原翻譯。</p>
-              <p data-wuf-i18n="options.decisionHelp.limits">Laya 使用文字情境，不分析影片畫面；詞義提示仍可能誤判，不能保證整句翻譯正確。</p>
-              <p data-wuf-i18n="options.decisionHelp.off">關閉：不加主題詞義提示，仍保留本地斷句、音效清理、格式檢查與一次錯誤重試。</p>
-              <p data-wuf-i18n="options.decisionHelp.custom">自訂：由指定模型判斷字幕斷句、過濾與輸出格式；額外模型請求可能增加等待時間。</p>
-            </div>
-            <div class="wuf-grid-2" id="wuf-custom-decision-group">
-              <label class="wuf-field">
-                <span data-wuf-i18n="options.decisionCustomModelLabel">自訂決策模型名稱 (Model ID)</span>
-                <input
-                  type="text"
-                  id="wuf-subtitle-decision-custom-model"
-                  placeholder="qwen2.5-3b-instruct / openai/gpt-4o-mini"
-                />
-              </label>
-              <label class="wuf-field">
-                <span data-wuf-i18n="options.decisionCustomUrlLabel">
-                  自訂決策端點 Base URL（留空則共用翻譯端點）
-                </span>
-                <input
-                  type="url"
-                  id="wuf-subtitle-decision-custom-url"
-                  placeholder="http://127.0.0.1:8080/v1"
-                />
-              </label>
-            </div>
-          </div>
-        </section>
       </div>
 
       <!-- Tab 4: Local Custom Model -->
@@ -414,6 +377,26 @@
               <span data-wuf-i18n="options.baseUrlLabel">API Base URL</span>
               <input type="url" id="wuf-local-base-url" placeholder="http://127.0.0.1:8080/v1" />
             </label>
+            <div class="wuf-inline-buttons">
+              <button
+                type="button"
+                id="wuf-local-preset-watchdog"
+                class="wuf-btn wuf-btn-secondary"
+                data-wuf-i18n="options.localPreset.watchdog"
+              >
+                套用 Watchdog 預設 (:8080)
+              </button>
+              <a
+                id="wuf-options-watchdog-link"
+                class="wuf-btn wuf-btn-ghost"
+                href="https://github.com/Afteryoupie/WUF-Watchdog/releases"
+                target="_blank"
+                rel="noopener noreferrer"
+                data-wuf-i18n="popup.downloadWatchdog"
+              >
+                下載 WUF Watchdog（啟用本機 AI／Mac 內建模型）
+              </a>
+            </div>
             <label class="wuf-field">
               <span data-wuf-i18n="options.apiKeyLabel">API 金鑰</span>
               <input type="password" id="wuf-local-api-key" autocomplete="off" />

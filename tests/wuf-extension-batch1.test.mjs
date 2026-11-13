@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
-import { dirname, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 
@@ -18,17 +20,16 @@ import {
   collectTranslatableUnits,
   DEFAULT_SETTINGS,
   DEFAULT_SUBTITLE_SYSTEM_PROMPT,
-  ensureLocalLayaDecision,
   ensureLocalLlamaServer,
   executeTranslation,
   exportSanitizedSettings,
+  fetchLocalModelEntries,
+  fetchWithTimeoutAndCancel,
   handleRuntimeMessage,
   heuristicMergeAsr,
   importSanitizedSettings,
   isLocalSubtitleProvider,
   isWatchdogLoopbackUrl,
-  JevDecisionEngine,
-  LayaDecisionEngine,
   loadSettingsSnapshot,
   localModelForPlatform,
   localSubtitlePrompt,
@@ -43,15 +44,15 @@ import {
   reserveFreeRequest,
   resetFreeRequestLimiter,
   resolveAsrEntryTimeline,
+  resolveSavedModelId,
+  SubtitleDecisionEngine,
   resolvePerformanceConfig,
   resolvePresetProvider,
   restoreTranslatedDom,
-  runAsrDecisionPipeline,
   runSubtitleDecisionPipeline,
   saveSettingsAndSecrets,
   splitLongSubtitleCue,
   stripSpeakerPrefix,
-  SUBTITLE_DECISION_MODES,
   subtitleRepairPrompt,
   t,
   TRANSLATION_ENGINES,
@@ -354,14 +355,13 @@ test('Options HTML and controller implement a 6-tab layout separating Webpage an
     [...TRANSLATION_ENGINES],
     ['openai-compat-online', 'openai-compat-local', 'google-translate', 'microsoft-translate'],
   );
-  assert.deepEqual([...SUBTITLE_DECISION_MODES], ['laya', 'custom', 'off']);
   assert.doesNotMatch(optionsHtml, /<option\s+value="opencc"/);
   assert.match(optionsHtml, /id="wuf-subtitle-system-prompt"/);
   assert.match(optionsHtml, /id="wuf-subtitle-batch-window"/);
   assert.match(optionsHtml, /id="wuf-subtitle-prefetch-lead"/);
-  assert.match(optionsHtml, /id="wuf-subtitle-decision-mode"/);
-  assert.match(optionsHtml, /id="wuf-subtitle-decision-custom-model"/);
-  assert.match(optionsHtml, /id="wuf-subtitle-decision-custom-url"/);
+  assert.doesNotMatch(optionsHtml, /id="wuf-subtitle-decision-mode"/);
+  assert.doesNotMatch(optionsHtml, /id="wuf-subtitle-decision-custom-model"/);
+  assert.doesNotMatch(optionsHtml, /id="wuf-subtitle-decision-custom-url"/);
 
   for (const tabId of OPTIONS_TABS) {
     assert.match(optionsHtml, new RegExp(`data-wuf-tab="${tabId}"`));
@@ -494,11 +494,6 @@ test('Online and local profiles, webpage and subtitle presets, and local-only AP
           systemPrompt: 'Custom YouTube Subtitle Prompt',
           batchWindowSec: 45,
           prefetchLeadSec: 12,
-          decisionMode: 'custom',
-          layaDecisionEnabled: false,
-          layaEndpointUrl: 'http://127.0.0.1:8080/v1/systemone',
-          decisionCustomModel: 'qwen2.5-3b-decision',
-          decisionCustomBaseUrl: 'http://127.0.0.1:8080/v1',
         },
       },
       {
@@ -539,16 +534,6 @@ test('Online and local profiles, webpage and subtitle presets, and local-only AP
     assert.equal(snapshot.subtitleProvider.apiKey, 'secret-local-key-456');
     assert.equal(snapshot.savedSettings.subtitles.batchWindowSec, 45);
     assert.equal(snapshot.savedSettings.subtitles.prefetchLeadSec, 12);
-    assert.equal(snapshot.savedSettings.subtitles.decisionMode, 'custom');
-    assert.equal(snapshot.savedSettings.subtitles.layaDecisionEnabled, false);
-    assert.equal(
-      snapshot.savedSettings.subtitles.decisionCustomModel,
-      'qwen2.5-3b-decision',
-    );
-    assert.equal(
-      snapshot.savedSettings.subtitles.decisionCustomBaseUrl,
-      'http://127.0.0.1:8080/v1',
-    );
 
     // Verify import strips any embedded credentials and rejects 'opencc' as a translation engine
     const { snapshot: importedSnap, warnings } = await importSanitizedSettings({
@@ -616,8 +601,6 @@ test('Windows runtime fallback clears Apple/Foundation loopback models at runtim
         engine: 'openai-compat-local',
         targetLanguage: 'zh-TW',
         customModelOverride: 'foundation-models-v1',
-        layaDecisionEnabled: true,
-        layaEndpointUrl: 'http://127.0.0.1:8080/v1/systemone',
       },
     });
 
@@ -664,7 +647,7 @@ test('Windows runtime fallback clears Apple/Foundation loopback models at runtim
   }
 });
 
-test('Local /v1/models picker discovers models over real HTTP, hides path/default aliases, preserves saved model on error, and clears to server default', async () => {
+test('Local /v1/models picker preserves raw IDs for non-Watchdog servers, normalizes confirmed Watchdog aliases, and preserves saved model offline', async () => {
   const requests = [];
   const server = await startTestHttpServer((req, res) => {
     requests.push({ url: req.url, auth: req.headers.authorization });
@@ -679,6 +662,7 @@ test('Local /v1/models picker discovers models over real HTTP, hides path/defaul
             { id: 'C:\\models\\Qwen-Translate.gguf', owned_by: 'local-llm' },
             { id: '/fixture/models/translation.gguf', owned_by: 'local-llm' },
             { id: 'default', owned_by: 'local-llm' },
+            { id: 'permissive', owned_by: 'local-llm' },
             { id: 'org/Riva-Translate', owned_by: 'local-llm' },
           ],
         }),
@@ -733,9 +717,24 @@ test('Local /v1/models picker discovers models over real HTTP, hides path/defaul
     assert.equal(select.hidden, false);
     assert.deepEqual(
       select.options.map(o => o.value),
-      ['', 'Qwen-Translate', 'org/Riva-Translate', 'custom-saved-model'],
+      [
+        '',
+        'Qwen-Translate',
+        'C:\\models\\Qwen-Translate.gguf',
+        '/fixture/models/translation.gguf',
+        'default',
+        'permissive',
+        'org/Riva-Translate',
+        'custom-saved-model',
+      ],
     );
     assert.equal(select.value, 'custom-saved-model');
+
+    // Non-Watchdog endpoint keeps path and .gguf model IDs selected without wiping them
+    input.value = '/models/my-model.gguf';
+    await update();
+    assert.equal(input.value, '/models/my-model.gguf');
+    assert.equal(select.value, '/models/my-model.gguf');
 
     // Manual clear button resets to server default ('')
     let inputEvents = 0;
@@ -754,8 +753,76 @@ test('Local /v1/models picker discovers models over real HTTP, hides path/defaul
     assert.equal(input.value, 'keep-me-when-offline');
     assert.equal(select.value, 'keep-me-when-offline');
     assert.equal(status.textContent, 'options.localModel.offlineError');
+
+    // Non-Watchdog server does not strip or silently rewrite even 'permissive'
+    baseUrl.value = `${server.url}/v1`;
+    input.value = 'permissive';
+    await update();
+    assert.equal(input.value, 'permissive');
+    assert.equal(select.value, 'permissive');
+    assert.equal(select.options.some(o => o.value === 'permissive'), true);
+
+    // Non-Watchdog test server does not call /api/status
+    assert.equal(requests.some(r => r.url === '/api/status'), false);
   } finally {
     await server.close();
+  }
+
+  // Confirmed Watchdog endpoint enriches display names, strips path aliases, and canonicalizes saved aliases
+  const watchdogServer = await startTestHttpServer((req, res) => {
+    if (req.url === '/v1/models') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          object: 'list',
+          data: [
+            { id: 'apple-intelligence-translation', owned_by: 'local-llm' },
+            { id: 'permissive', owned_by: 'local-llm' },
+            { id: 'custom-guardrail-alias', owned_by: 'local-llm' },
+            { id: 'default', owned_by: 'local-llm' },
+          ],
+        }),
+      );
+      return;
+    }
+    if (req.url === '/api/status') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          status: 'running',
+          models: [
+            {
+              id: 'apple-intelligence-translation',
+              name: 'Apple Foundation Models',
+              path: 'custom-guardrail-alias',
+              type: 'apple-api',
+            },
+          ],
+        }),
+      );
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  try {
+    const entries = await fetchLocalModelEntries(`${watchdogServer.url}/v1`, '', undefined, {
+      assumeWatchdog: true,
+    });
+    assert.deepEqual(entries, [
+      {
+        id: 'apple-intelligence-translation',
+        name: 'Apple Foundation Models',
+        aliases: ['custom-guardrail-alias', 'Apple Foundation Models'],
+        fromWatchdog: true,
+      },
+    ]);
+    assert.deepEqual(resolveSavedModelId('custom-guardrail-alias', entries), {
+      resolved: 'apple-intelligence-translation',
+      normalizedFromAlias: true,
+    });
+  } finally {
+    await watchdogServer.close();
   }
 });
 
@@ -1141,7 +1208,7 @@ test('Background runtime message dispatcher handles settings and translation req
   }
 });
 
-test('Phase 3 Webpage DOM translator, single top-level context menu, YouTube subtitle pipeline + Laya/custom decision engine', async () => {
+test('Phase 3 Webpage DOM translator, single top-level context menu, YouTube subtitle pipeline + local subtitle safeguards', async () => {
   // 1. Single top-level page context menu registration and dynamic title refresh
   const createdMenus = [];
   const updatedMenus = [];
@@ -1273,105 +1340,590 @@ test('Phase 3 Webpage DOM translator, single top-level context menu, YouTube sub
   assert.equal(windowBatch.windowSegments.length, 2);
   assert.equal(windowBatch.prefetchWindowIndex, 1);
 
-  // 5. Laya / Custom decision engine & subtitle decision pipeline
-  const decisionServer = await startTestHttpServer(async (req, res) => {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    if (req.url === '/v1/models') {
-      res.end(JSON.stringify({ object: 'list', data: [{ id: 'doc-model' }] }));
+  // 5. Local subtitle safeguards & decision pipeline (no decision model requests)
+  const localEngine = new SubtitleDecisionEngine();
+  const localEval = await localEngine.evaluateBatch(['Hello world'], 'zh-TW', 'en');
+  assert.equal(localEval[0].is_valid, true);
+  assert.equal(localEval[0].source, 'fallback');
+
+  const pipelineOut = await runSubtitleDecisionPipeline(
+    {
+      texts: ['[Music]', '>> Hello there.'],
+      sourceLanguage: 'en',
+    },
+    {
+      subtitles: {
+        targetLanguage: 'zh-TW',
+      },
+    },
+    async p => ({
+      ok: true,
+      result: p.texts.map(l => `譯：${l}`),
+    }),
+    { engine: localEngine },
+  );
+  assert.equal(pipelineOut.ok, true);
+  assert.deepEqual(pipelineOut.result, ['', '譯：Hello there.']);
+  assert.equal(stripSpeakerPrefix('>> Hi'), 'Hi');
+  assert.match(
+    subtitleRepairPrompt('Prompt', {
+      decisionRepair: [{ translation: 'Bad', reason: 'format' }],
+    }),
+    /Retranslate the supplied source faithfully/,
+  );
+});
+
+test('Store out-of-the-box defaults use zero-config Google Translate and omit Laya, custom decision model, & macOS fm preset button', async () => {
+  assert.equal(DEFAULT_SETTINGS.webpage.engine, 'google-translate');
+  assert.equal(DEFAULT_SETTINGS.subtitles.engine, 'google-translate');
+
+  const popupHtml = readFileSync(resolve(distDir, 'popup.html'), 'utf8');
+  assert.match(popupHtml, /id="wuf-watchdog-download-link"/);
+
+  const optionsHtml = readFileSync(resolve(distDir, 'options.html'), 'utf8');
+  assert.match(optionsHtml, /id="wuf-local-preset-watchdog"/);
+  assert.match(optionsHtml, /id="wuf-options-watchdog-link"/);
+  assert.doesNotMatch(optionsHtml, /id="wuf-local-preset-apple-fm"/);
+  assert.doesNotMatch(optionsHtml, /id="wuf-subtitle-laya-endpoint"/);
+  assert.doesNotMatch(optionsHtml, /id="wuf-subtitle-decision-mode"/);
+  assert.doesNotMatch(optionsHtml, /id="wuf-subtitle-decision-custom-model"/);
+  assert.doesNotMatch(optionsHtml, /id="wuf-subtitle-decision-custom-url"/);
+  assert.doesNotMatch(optionsHtml, /value="laya"/);
+
+  const mockStorage = createMockChromeStorage();
+  mockStorage.install();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async url => {
+    throw new Error(`Unexpected network call during warmup: ${String(url)}`);
+  };
+  try {
+    const warmupResp = await handleRuntimeMessage({ type: 'wuf:warmup-youtube' });
+    assert.equal(warmupResp.ok, true);
+    assert.equal(warmupResp.data.engine, 'google-translate');
+  } finally {
+    globalThis.fetch = originalFetch;
+    mockStorage.uninstall();
+  }
+});
+
+test('fetchWithTimeoutAndCancel covers full body reading and aborts stalled bodies cleanly without leaking listeners', async () => {
+  const delayedServer = await startTestHttpServer((req, res) => {
+    if (req.url === '/slow-200') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.write('{"choices":');
+      const timer = setTimeout(() => {
+        if (!res.writableEnded) {
+          res.end('[{"message":{"content":"你好"}}]}');
+        }
+      }, 220);
+      timer.unref?.();
       return;
     }
-    if (req.url === '/v1/systemone') {
-      res.end(
-        JSON.stringify({
-          answers: {
-            valid_0: { type: 'noul', noul: 0.99 },
-            needs_0: { type: 'noul', noul: 0.99 },
-            format_0: { type: 'noul', noul: 0.01 },
-          },
-        }),
-      );
+    if (req.url === '/slow-500') {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.write('{"error":{"message":');
+      const timer = setTimeout(() => {
+        if (!res.writableEnded) {
+          res.end('"delayed failure"}}');
+        }
+      }, 220);
+      timer.unref?.();
       return;
     }
-    if (req.url === '/v1/chat/completions') {
-      const chunks = [];
-      for await (const chunk of req) chunks.push(chunk);
-      const bodyStr = Buffer.concat(chunks).toString('utf8');
-      if (bodyStr.includes('questions')) {
-        res.end(
-          JSON.stringify({
-            choices: [
-              {
-                message: {
-                  content: JSON.stringify({
-                    valid_0: true,
-                    needs_0: true,
-                    format_0: false,
-                  }),
-                },
-              },
-            ],
-          }),
-        );
-        return;
-      }
-      res.end(
-        JSON.stringify({
-          choices: [{ message: { content: '第一句譯文\n---WUF-SEG---\n第二句譯文' } }],
-        }),
-      );
+    if (req.url?.endsWith('/chat/completions')) {
+      req.resume();
+      req.on('end', () => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.write('{"choices":');
+        const timer = setTimeout(() => {
+          if (!res.writableEnded) {
+            res.end('[{"message":{"content":"你好"}}]}');
+          }
+        }, 220);
+        timer.unref?.();
+      });
       return;
     }
-    res.end('{}');
+    res.writeHead(404);
+    res.end();
   });
 
   try {
-    const layaEngine = new LayaDecisionEngine({
-      mode: 'laya',
-      apiUrl: `${decisionServer.url}/v1/systemone`,
-    });
-    assert.equal(JevDecisionEngine, LayaDecisionEngine);
-    const layaEval = await layaEngine.evaluateBatch(['Hello world'], 'zh-TW', 'en');
-    assert.equal(layaEval[0].is_valid, true);
-    assert.equal(layaEval[0].needs_translation, true);
-
-    const customEngine = new LayaDecisionEngine({
-      mode: 'custom',
-      customBaseUrl: `${decisionServer.url}/v1`,
-      customModel: 'qwen-decision',
-    });
-    const customEval = await customEngine.evaluateBatch(['Hello world'], 'zh-TW', 'en');
-    assert.equal(customEval[0].is_valid, true);
-    assert.equal(customEval[0].source, 'custom');
-
-    const pipelineOut = await runSubtitleDecisionPipeline(
-      {
-        texts: ['[Music]', '>> Hello there.'],
-        sourceLanguage: 'en',
+    // 1. Direct timeout during delayed 200 body read
+    await assert.rejects(
+      async () => {
+        const res = await fetchWithTimeoutAndCancel(
+          `${delayedServer.url}/slow-200`,
+          {},
+          { timeoutMs: 40 },
+        );
+        await res.json();
       },
-      {
-        subtitles: {
-          targetLanguage: 'zh-TW',
-          decisionMode: 'custom',
-          decisionCustomModel: 'qwen-decision',
-          decisionCustomBaseUrl: `${decisionServer.url}/v1`,
-        },
-      },
-      async p => ({
-        ok: true,
-        result: p.texts.map(l => `譯：${l}`),
-      }),
-      { engine: customEngine },
+      err => err instanceof WufProviderError && err.code === 'TIMEOUT',
     );
-    assert.equal(pipelineOut.ok, true);
-    assert.deepEqual(pipelineOut.result, ['', '譯：Hello there.']);
-    assert.equal(stripSpeakerPrefix('>> Hi'), 'Hi');
-    assert.match(
-      subtitleRepairPrompt('Prompt', {
-        decisionRepair: [{ translation: 'Bad', reason: 'format' }],
+
+    // 2. Manual abort during delayed 200 body read + listener cleanup check
+    let activeListeners = 0;
+    const controller = new AbortController();
+    const rawSignal = controller.signal;
+    const origAdd = rawSignal.addEventListener.bind(rawSignal);
+    const origRemove = rawSignal.removeEventListener.bind(rawSignal);
+    rawSignal.addEventListener = (...args) => {
+      activeListeners++;
+      return origAdd(...args);
+    };
+    rawSignal.removeEventListener = (...args) => {
+      activeListeners--;
+      return origRemove(...args);
+    };
+    const abortTimer = setTimeout(() => controller.abort(), 50);
+    try {
+      await assert.rejects(
+        async () => {
+          const res = await fetchWithTimeoutAndCancel(
+            `${delayedServer.url}/slow-200`,
+            {},
+            { timeoutMs: 2000, signal: rawSignal },
+          );
+          await res.text();
+        },
+        err => err instanceof WufProviderError && err.code === 'ABORTED',
+      );
+      assert.equal(activeListeners, 0);
+    } finally {
+      clearTimeout(abortTimer);
+    }
+
+    // 3. Delayed 500 error body read rejects with TIMEOUT when body stalls past deadline
+    await assert.rejects(
+      async () => {
+        const res = await fetchWithTimeoutAndCancel(
+          `${delayedServer.url}/slow-500`,
+          {},
+          { timeoutMs: 40 },
+        );
+        await res.text();
+      },
+      err => err instanceof WufProviderError && err.code === 'TIMEOUT',
+    );
+
+    // 4. End-to-end translateWithOpenAICompat aborts stalled body on timeout
+    await assert.rejects(
+      translateWithOpenAICompat({
+        texts: ['Hello'],
+        targetLanguage: 'zh-TW',
+        provider: {
+          profileType: 'online',
+          baseUrl: delayedServer.url,
+          apiKey: 'test',
+          model: 'test-model',
+          effectiveModel: 'test-model',
+          systemPrompt: '',
+          temperature: 0.2,
+          thinkingLevel: 'off',
+          routingSort: 'default',
+          allowFallbacks: true,
+          extraBodyJson: '',
+          webConcurrency: 4,
+          webBatchChars: 3000,
+          subtitleBatchSize: 10,
+          fetchTimeoutSec: 60,
+          isOpenRouterFree: false,
+        },
+        timeoutMs: 40,
       }),
-      /Retranslate the supplied source faithfully/,
+      err => err instanceof WufProviderError && err.code === 'TIMEOUT',
+    );
+
+    // 5. End-to-end translateWithGoogle aborts stalled body on caller cancel
+    const oldFetch = globalThis.fetch;
+    const googleController = new AbortController();
+    const cancelGoogle = setTimeout(() => googleController.abort(), 50);
+    globalThis.fetch = async (url, init) => {
+      if (String(url).includes('translate.googleapis.com')) {
+        return oldFetch(`${delayedServer.url}/slow-200`, init);
+      }
+      return oldFetch(url, init);
+    };
+    try {
+      await assert.rejects(
+        translateWithGoogle({
+          texts: ['Hello'],
+          targetLanguage: 'zh-TW',
+          timeoutMs: 2000,
+          signal: googleController.signal,
+        }),
+        err => err instanceof WufProviderError && err.code === 'ABORTED',
+      );
+    } finally {
+      clearTimeout(cancelGoogle);
+      globalThis.fetch = oldFetch;
+    }
+  } finally {
+    await delayedServer.close();
+  }
+});
+
+test('Authenticated local servers receive Bearer tokens on probes and surface 401/403 instead of WATCHDOG_ERROR or Native Host wake', async () => {
+  const seen = [];
+  let nativeCalls = 0;
+  const server = await startTestHttpServer((req, res) => {
+    seen.push({ method: req.method, url: req.url, auth: req.headers.authorization || '' });
+    if (req.url === '/v1/models' || req.url === '/v1/chat/completions' || req.url === '/api/status') {
+      if (req.headers.authorization !== 'Bearer local-secret') {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'Invalid local API key' } }));
+        return;
+      }
+      if (req.url === '/v1/models') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ object: 'list', data: [{ id: 'auth-model' }] }));
+        return;
+      }
+      if (req.url === '/api/status') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'running', current_model: 'auth-model' }));
+        return;
+      }
+      req.resume();
+      req.on('end', () => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ choices: [{ message: { content: '你好' } }] }));
+      });
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+
+  const oldChrome = globalThis.chrome;
+  globalThis.chrome = {
+    ...(oldChrome || {}),
+    runtime: {
+      sendNativeMessage(_host, _msg, cb) {
+        nativeCalls++;
+        cb(null);
+      },
+    },
+  };
+
+  try {
+    const baseLocalProvider = {
+      profileType: 'local',
+      baseUrl: `${server.url}/v1`,
+      apiKey: 'wrong-key',
+      model: 'auth-model',
+      effectiveModel: 'auth-model',
+      systemPrompt: '',
+      temperature: 0.2,
+      thinkingLevel: 'off',
+      routingSort: 'default',
+      allowFallbacks: true,
+      extraBodyJson: '',
+      webConcurrency: 4,
+      webBatchChars: 3000,
+      subtitleBatchSize: 10,
+      fetchTimeoutSec: 60,
+      isOpenRouterFree: false,
+    };
+
+    // Missing/bad token on non-Watchdog local endpoint: fails with 401 HTTP_ERROR, never WATCHDOG_ERROR
+    await assert.rejects(
+      translateWithOpenAICompat({
+        texts: ['Hello'],
+        targetLanguage: 'zh-TW',
+        provider: baseLocalProvider,
+      }),
+      err => err instanceof WufProviderError && err.code === 'HTTP_ERROR' && err.status === 401,
+    );
+    assert.equal(nativeCalls, 0);
+    assert.equal(seen.some(s => s.url === '/api/wake' || s.url === '/api/status'), false);
+
+    // Valid token succeeds on subtitle path without touching Watchdog management routes
+    const ok = await translateWithOpenAICompat({
+      texts: ['Hello'],
+      targetLanguage: 'zh-TW',
+      provider: {
+        ...baseLocalProvider,
+        apiKey: 'local-secret',
+      },
+    });
+    assert.deepEqual(ok.translations, ['你好']);
+    assert.equal(nativeCalls, 0);
+
+    // Even when treated as Watchdog (port 8080 / assumeWatchdog), 401 reports HTTP_ERROR (not Native Host wake)
+    await assert.rejects(
+      ensureLocalLlamaServer(`${server.url}/v1`, 'auth-model', {
+        assumeWatchdog: true,
+        apiKey: 'wrong-key',
+        probeTimeoutMs: 500,
+      }),
+      err => err instanceof WufProviderError && err.code === 'HTTP_ERROR' && err.status === 401,
+    );
+    assert.equal(nativeCalls, 0);
+  } finally {
+    globalThis.chrome = oldChrome;
+    await server.close();
+  }
+});
+
+test('Local model picker ignores stale in-flight refresh results after user selects another model or switches endpoint', async () => {
+  let releaseFirstRefresh;
+  const firstRefreshBlocked = new Promise(resolve => {
+    releaseFirstRefresh = resolve;
+  });
+
+  const slowServer = await startTestHttpServer(async (req, res) => {
+    if (req.url === '/v1/models') {
+      await firstRefreshBlocked;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ object: 'list', data: [{ id: 'stale-model' }] }));
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+
+  try {
+    class MockControl extends EventTarget {
+      value = '';
+      hidden = false;
+      disabled = false;
+      textContent = '';
+      options = [];
+      replaceChildren(...opts) {
+        this.options = opts;
+      }
+    }
+
+    const baseUrl = new MockControl();
+    const input = new MockControl();
+    const select = new MockControl();
+    const refresh = new MockControl();
+    const clear = new MockControl();
+    const status = new MockControl();
+
+    baseUrl.value = `${slowServer.url}/v1`;
+    input.value = 'initial-model';
+
+    const update = bindLocalModelPicker({
+      baseUrl,
+      input,
+      select,
+      refresh,
+      clear,
+      status,
+      t: k => k,
+      getProviderType: () => 'local',
+    });
+
+    // Scenario 1: User edits/selects/clears model while refresh is in flight —
+    // saved value stays untouched AND refresh button / loading state recover cleanly.
+    const inflight1 = update();
+    assert.equal(refresh.disabled, true);
+    assert.equal(status.textContent, 'options.localModel.loading');
+    select.value = 'user-picked-during-refresh';
+    select.dispatchEvent(new Event('change'));
+    releaseFirstRefresh();
+    await inflight1;
+    assert.equal(input.value, 'user-picked-during-refresh');
+    assert.equal(select.value, 'user-picked-during-refresh');
+    assert.equal(select.options.some(o => o.value === 'stale-model'), false);
+    assert.equal(refresh.disabled, false);
+    assert.equal(status.textContent, 'options.localModel.ready');
+
+    // Scenario 1b: Offline failure after user clears/edits model mid-refresh also restores button and clears loading
+    baseUrl.value = 'http://127.0.0.1:1/v1';
+    input.value = 'keep-me';
+    const offlineInflight = update();
+    assert.equal(refresh.disabled, true);
+    assert.equal(status.textContent, 'options.localModel.loading');
+    clear.dispatchEvent(new Event('click'));
+    await offlineInflight;
+    assert.equal(input.value, '');
+    assert.equal(select.value, '');
+    assert.equal(refresh.disabled, false);
+    assert.equal(status.textContent, 'options.localModel.offlineError');
+
+    // Scenario 2: Old refresh finishes while a newer refresh is still in flight —
+    // old refresh must not overwrite controls or prematurely re-enable the refresh button.
+    let releaseOldRefresh;
+    const oldBlocked = new Promise(resolve => {
+      releaseOldRefresh = resolve;
+    });
+    const slowServer2 = await startTestHttpServer(async (req, res) => {
+      if (req.url === '/v1/models') {
+        await oldBlocked;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ object: 'list', data: [{ id: 'old-endpoint-model' }] }));
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+
+    let releaseNewRefresh;
+    const newBlocked = new Promise(resolve => {
+      releaseNewRefresh = resolve;
+    });
+    const slowNewServer = await startTestHttpServer(async (req, res) => {
+      if (req.url === '/v1/models') {
+        await newBlocked;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ object: 'list', data: [{ id: 'fast-model' }] }));
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    try {
+      baseUrl.value = `${slowServer2.url}/v1`;
+      input.value = 'keep-across-switch';
+      const stalePromise = update();
+      baseUrl.value = `${slowNewServer.url}/v1`;
+      const freshPromise = update();
+      assert.equal(refresh.disabled, true);
+      assert.equal(status.textContent, 'options.localModel.loading');
+
+      // Finishing stalePromise first must NOT unlock refresh while freshPromise is active
+      releaseOldRefresh();
+      await stalePromise;
+      assert.equal(refresh.disabled, true);
+      assert.equal(status.textContent, 'options.localModel.loading');
+
+      // Completing freshPromise updates options and re-enables refresh
+      releaseNewRefresh();
+      await freshPromise;
+      assert.equal(refresh.disabled, false);
+      assert.equal(status.textContent, 'options.localModel.ready');
+      assert.equal(select.options.some(o => o.value === 'fast-model'), true);
+      assert.equal(select.options.some(o => o.value === 'old-endpoint-model'), false);
+    } finally {
+      await slowServer2.close();
+      await slowNewServer.close();
+    }
+  } finally {
+    await slowServer.close();
+  }
+});
+
+test('Cross-project Riva contract: direct Riva, Watchdog+Riva, and Watchdog+default emit exactly one Translate prefix', async t => {
+  const baseWatchdogProvider = {
+    profileType: 'local',
+    baseUrl: 'http://127.0.0.1:8080/v1',
+    apiKey: '',
+    model: 'org/riva-translate-4b',
+    effectiveModel: 'org/riva-translate-4b',
+    systemPrompt: '',
+    temperature: 0.2,
+    thinkingLevel: 'off',
+    routingSort: 'default',
+    allowFallbacks: true,
+    extraBodyJson: '',
+    webConcurrency: 4,
+    webBatchChars: 3000,
+    subtitleBatchSize: 10,
+    fetchTimeoutSec: 60,
+    isOpenRouterFree: false,
+  };
+  const { body: explicitRivaBody } = buildChatCompletionRequestBody({
+    texts: ['Hello'],
+    targetLanguage: 'zh-TW',
+    provider: baseWatchdogProvider,
+  });
+  assert.equal(explicitRivaBody.target_language, undefined);
+  assert.equal(explicitRivaBody.shinkansen_target_language, undefined);
+  assert.equal(
+    explicitRivaBody.messages[explicitRivaBody.messages.length - 1].content,
+    'Translate this into Traditional Chinese: Hello',
+  );
+
+  // Direct Riva path over HTTP
+  const seenDirect = [];
+  const directServer = await startTestHttpServer((req, res) => {
+    if (req.url === '/v1/models') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ object: 'list', data: [{ id: 'org/riva-translate-4b' }] }));
+      return;
+    }
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      seenDirect.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ choices: [{ message: { content: '你好' } }] }));
+    });
+  });
+  try {
+    const res = await translateWithOpenAICompat({
+      texts: ['Hello'],
+      targetLanguage: 'zh-TW',
+      provider: {
+        ...baseWatchdogProvider,
+        baseUrl: `${directServer.url}/v1`,
+      },
+    });
+    assert.deepEqual(res.translations, ['你好']);
+    assert.equal(seenDirect.length, 1);
+    assert.equal(seenDirect[0].target_language, undefined);
+    assert.equal(
+      seenDirect[0].messages[seenDirect[0].messages.length - 1].content,
+      'Translate this into Traditional Chinese: Hello',
     );
   } finally {
-    await decisionServer.close();
+    await directServer.close();
+  }
+
+  // Cross-project Watchdog Go AdaptPayload verification (explicit Riva + server default)
+  const watchdogGoDir = resolve(rootDir, '..', 'WUF-Watchdog', 'watchdog-go');
+  const goBin = '/opt/homebrew/bin/go';
+  if (!existsSync(watchdogGoDir) || !existsSync(goBin)) {
+    t.skip('Sibling WUF-Watchdog repo or go binary unavailable');
+    return;
+  }
+
+  const { body: defaultModelBody } = buildChatCompletionRequestBody({
+    texts: ['Hello'],
+    targetLanguage: 'zh-TW',
+    provider: {
+      ...baseWatchdogProvider,
+      model: '',
+      effectiveModel: '',
+    },
+  });
+  assert.equal(defaultModelBody.target_language, 'Traditional Chinese');
+  assert.equal(defaultModelBody.messages[defaultModelBody.messages.length - 1].content, 'Hello');
+
+  const tmpDir = mkdtempSync(join(tmpdir(), 'wuf-riva-contract-'));
+  const fixturePath = join(tmpDir, 'cases.json');
+  try {
+    writeFileSync(
+      fixturePath,
+      JSON.stringify([
+        {
+          name: 'translate_explicit_riva_through_watchdog',
+          model: 'org/riva-translate-4b',
+          payload: explicitRivaBody,
+          expected_content: 'Translate this into Traditional Chinese: Hello',
+        },
+        {
+          name: 'translate_server_default_through_watchdog',
+          model: '',
+          payload: defaultModelBody,
+          expected_content: 'Translate this into Traditional Chinese: Hello',
+        },
+      ]),
+    );
+    const goRes = spawnSync(
+      goBin,
+      ['-C', watchdogGoDir, 'test', '-count=1', '-run', '^TestCrossProjectRivaContract$', './internal/core'],
+      {
+        env: { ...process.env, WUF_RIVA_CONTRACT_FIXTURES: fixturePath },
+        encoding: 'utf8',
+      },
+    );
+    assert.equal(goRes.status, 0, `${goRes.stdout}\n${goRes.stderr}`);
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
   }
 });

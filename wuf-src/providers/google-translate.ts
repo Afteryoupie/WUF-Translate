@@ -113,6 +113,9 @@ export async function translateWithGoogle(
     try {
       json = await response.json();
     } catch (err) {
+      if (err instanceof WufProviderError) {
+        throw err;
+      }
       throw new WufProviderError('Google Translate returned non-JSON body', {
         code: 'INVALID_RESPONSE',
         provider: 'google-translate',

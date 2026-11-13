@@ -4,7 +4,6 @@ import type {
   ProviderProfileType,
   RoutingSort,
   SettingsSnapshotPayload,
-  SubtitleDecisionMode,
   ThemeMode,
   ThinkingLevel,
   TranslationEngineId,
@@ -12,7 +11,11 @@ import type {
   WufSettings,
 } from '../types.ts';
 import { applyI18nToDom, resolveUiLocale, t, type WufI18nKey } from '../i18n/index.ts';
-import { fetchLocalModelsCatalog } from '../lib/watchdog-client.ts';
+import {
+  fetchLocalModelEntries,
+  resolveSavedModelId,
+  type LocalModelEntry,
+} from '../lib/watchdog-client.ts';
 import { bindLocalModelPicker, type PickerControlLike } from '../lib/local-model-picker.ts';
 import { sendWufRuntimeMessage } from '../lib/runtime-client.ts';
 import { applyThemeMode } from '../ui/theme-init.ts';
@@ -38,6 +41,16 @@ function getSelect(id: string): HTMLSelectElement {
 
 function getTextArea(id: string): HTMLTextAreaElement {
   return document.getElementById(id) as HTMLTextAreaElement;
+}
+
+/** Ensures non-preset saved language codes remain selectable during hydration. */
+function setSelectValueWithFallback(select: HTMLSelectElement, rawValue: string): void {
+  const value = rawValue.trim() || 'zh-TW';
+  const hasOption = Array.from(select.options).some((opt) => opt.value === value);
+  if (!hasOption) {
+    select.add(new Option(value, value));
+  }
+  select.value = value;
 }
 
 function parseOptionalFloat(raw: string): number | null {
@@ -205,7 +218,7 @@ export async function initOptionsPage(): Promise<void> {
 
   // Webpage & Subtitle preset controls
   const webpageEngine = getSelect('wuf-webpage-engine');
-  const webpageTargetLang = getInput('wuf-webpage-target-lang');
+  const webpageTargetLang = getSelect('wuf-webpage-target-lang');
   const webpageDisplayMode = getSelect('wuf-webpage-display-mode');
   const webpageModelOverride = getInput('wuf-webpage-model-override');
   const webpageCrossTabSticky = getInput('wuf-webpage-cross-tab-sticky');
@@ -218,40 +231,14 @@ export async function initOptionsPage(): Promise<void> {
   document.getElementById('wuf-webpage-open-online')?.addEventListener('click', () => tabs.switchTab('online', true));
 
   const subtitleEngine = getSelect('wuf-subtitle-engine');
-  const subtitleTargetLang = getInput('wuf-subtitle-target-lang');
+  const subtitleTargetLang = getSelect('wuf-subtitle-target-lang');
   const subtitleModelOverride = getInput('wuf-subtitle-model-override');
   const subtitleSystemPrompt = getTextArea('wuf-subtitle-system-prompt');
   const subtitleBatchWindow = getInput('wuf-subtitle-batch-window');
   const subtitlePrefetchLead = getInput('wuf-subtitle-prefetch-lead');
-  const subtitleDecisionMode = getSelect('wuf-subtitle-decision-mode');
-  const subtitleLayaEndpoint = getInput('wuf-subtitle-laya-endpoint');
-  const subtitleDecisionCustomModel = getInput('wuf-subtitle-decision-custom-model');
-  const subtitleDecisionCustomUrl = getInput('wuf-subtitle-decision-custom-url');
-  const layaEndpointGroup = document.getElementById('wuf-laya-endpoint-group');
-  const customDecisionGroup = document.getElementById('wuf-custom-decision-group');
 
   const openccEnabledEl = getInput('wuf-opt-opencc-enabled');
   const openccVariantEl = getSelect('wuf-opt-opencc-variant');
-
-  const syncDecisionModeVisibility = (mode: SubtitleDecisionMode) => {
-    if (layaEndpointGroup) {
-      layaEndpointGroup.style.opacity = mode === 'laya' ? '1' : '0.6';
-    }
-    if (customDecisionGroup) {
-      customDecisionGroup.style.opacity = mode === 'custom' ? '1' : '0.85';
-    }
-  };
-
-  subtitleDecisionCustomModel?.addEventListener('input', () => {
-    if (
-      !isHydrating &&
-      subtitleDecisionCustomModel.value.trim() !== '' &&
-      subtitleDecisionMode &&
-      subtitleDecisionMode.value !== 'custom'
-    ) {
-      subtitleDecisionMode.value = 'custom';
-    }
-  });
 
   // Backup / Reset controls
   const exportBtn = document.getElementById('wuf-export-btn') as HTMLButtonElement;
@@ -279,6 +266,7 @@ export async function initOptionsPage(): Promise<void> {
     select: HTMLSelectElement,
   ): (() => Promise<void>) => {
     let token = 0;
+    let syncingInput = false;
     const update = async (): Promise<void> => {
       const current = ++token;
       if (engine.value !== 'openai-compat-local') {
@@ -286,26 +274,50 @@ export async function initOptionsPage(): Promise<void> {
         select.hidden = true;
         return;
       }
-      let models: string[] = [];
+      let models: LocalModelEntry[] = [];
       try {
-        models = await fetchLocalModelsCatalog(localBaseUrl.value.trim(), localApiKey.value.trim());
+        models = await fetchLocalModelEntries(localBaseUrl.value.trim(), localApiKey.value.trim());
       } catch {
         // offline: keep saved value selectable
       }
-      if (current !== token) return;
-      const saved = input.value.trim();
-      const names = ['', ...models];
-      if (saved && !names.includes(saved)) names.push(saved);
-      select.replaceChildren(
-        ...names.map((n) => new Option(n || t(currentLocale, 'options.localModel.serverDefault' as WufI18nKey), n)),
-      );
+      if (current !== token || engine.value !== 'openai-compat-local') return;
+      const rawSaved = input.value.trim();
+      const { resolved: saved, normalizedFromAlias } = resolveSavedModelId(rawSaved, models);
+      const entries: LocalModelEntry[] = [
+        { id: '', name: t(currentLocale, 'options.localModel.serverDefault' as WufI18nKey) },
+        ...models,
+      ];
+      if (saved && !entries.some((m) => m.id === saved)) {
+        entries.push({ id: saved, name: saved });
+      }
+      select.replaceChildren(...entries.map((m) => new Option(m.name || m.id, m.id)));
       select.value = saved;
+      if (normalizedFromAlias && saved !== rawSaved) {
+        input.value = saved;
+        syncingInput = true;
+        try {
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+        } finally {
+          syncingInput = false;
+        }
+      }
       input.hidden = true;
       select.hidden = false;
     };
     select.addEventListener('change', () => {
+      token++;
       input.value = select.value;
-      input.dispatchEvent(new Event('input', { bubbles: true }));
+      syncingInput = true;
+      try {
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      } finally {
+        syncingInput = false;
+      }
+    });
+    input.addEventListener('input', () => {
+      if (!syncingInput) {
+        token++;
+      }
     });
     engine.addEventListener('change', () => void update());
     localBaseUrl.addEventListener('change', () => void update());
@@ -363,7 +375,7 @@ export async function initOptionsPage(): Promise<void> {
       windowsFallbackNote.hidden = !localFallback;
 
       webpageEngine.value = saved.webpage.engine;
-      webpageTargetLang.value = saved.webpage.targetLanguage;
+      setSelectValueWithFallback(webpageTargetLang, saved.webpage.targetLanguage);
       webpageDisplayMode.value = saved.webpage.displayMode;
       webpageModelOverride.value = saved.webpage.customModelOverride;
       webpageAutoHosts.value = saved.webpage.autoTranslateHosts.join('\n');
@@ -373,7 +385,7 @@ export async function initOptionsPage(): Promise<void> {
       }
 
       subtitleEngine.value = saved.subtitles.engine;
-      subtitleTargetLang.value = saved.subtitles.targetLanguage;
+      setSelectValueWithFallback(subtitleTargetLang, saved.subtitles.targetLanguage);
       subtitleModelOverride.value = saved.subtitles.customModelOverride;
       if (subtitleSystemPrompt) {
         subtitleSystemPrompt.value = saved.subtitles.systemPrompt;
@@ -384,19 +396,6 @@ export async function initOptionsPage(): Promise<void> {
       if (subtitlePrefetchLead) {
         subtitlePrefetchLead.value = String(saved.subtitles.prefetchLeadSec);
       }
-      if (subtitleDecisionMode) {
-        subtitleDecisionMode.value = saved.subtitles.decisionMode;
-      }
-      if (subtitleLayaEndpoint) {
-        subtitleLayaEndpoint.value = saved.subtitles.layaEndpointUrl;
-      }
-      if (subtitleDecisionCustomModel) {
-        subtitleDecisionCustomModel.value = saved.subtitles.decisionCustomModel;
-      }
-      if (subtitleDecisionCustomUrl) {
-        subtitleDecisionCustomUrl.value = saved.subtitles.decisionCustomBaseUrl;
-      }
-      syncDecisionModeVisibility(saved.subtitles.decisionMode);
 
       if (openccEnabledEl) {
         openccEnabledEl.checked = saved.openccEnabled;
@@ -505,28 +504,10 @@ export async function initOptionsPage(): Promise<void> {
               prev.subtitles.prefetchLeadSec,
             )
           : prev.subtitles.prefetchLeadSec,
-        decisionMode:
-          (subtitleDecisionMode?.value as SubtitleDecisionMode) ||
-          prev.subtitles.decisionMode,
-        layaDecisionEnabled:
-          ((subtitleDecisionMode?.value as SubtitleDecisionMode) ||
-            prev.subtitles.decisionMode) === 'laya',
-        layaEndpointUrl:
-          subtitleLayaEndpoint?.value?.trim() || prev.subtitles.layaEndpointUrl,
-        decisionCustomModel:
-          subtitleDecisionCustomModel?.value?.trim() ??
-          prev.subtitles.decisionCustomModel,
-        decisionCustomBaseUrl:
-          subtitleDecisionCustomUrl?.value?.trim() ??
-          prev.subtitles.decisionCustomBaseUrl,
       },
       openccEnabled: openccEnabledEl ? openccEnabledEl.checked : prev.openccEnabled,
       openccVariant: openccVariantEl.value as OpenCCVariant,
     };
-
-    if ( nextSettings.subtitles?.decisionMode ) {
-      syncDecisionModeVisibility(nextSettings.subtitles.decisionMode);
-    }
 
     const resp = await sendWufRuntimeMessage<SettingsSnapshotPayload>({
       type: 'wuf:save-settings',
@@ -685,6 +666,16 @@ export async function initOptionsPage(): Promise<void> {
   const localTestResult = document.getElementById('wuf-local-test-result');
   const onlineTestBtn = document.getElementById('wuf-online-model-test') as HTMLButtonElement | null;
   const onlineTestResult = document.getElementById('wuf-online-test-result');
+
+  document.getElementById('wuf-local-preset-watchdog')?.addEventListener('click', async () => {
+    localBaseUrl.value = 'http://127.0.0.1:8080/v1';
+    localModelInput.value = '';
+    webpageEngine.value = 'openai-compat-local';
+    subtitleEngine.value = 'openai-compat-local';
+    await collectAndAutoSave();
+    await updateLocalPicker();
+    await Promise.all([updateWebpageOverride(), updateSubtitleOverride()]);
+  });
 
   const runModelTest = async (
     engine: 'openai-compat-local' | 'openai-compat-online',

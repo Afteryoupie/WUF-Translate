@@ -13,9 +13,8 @@ import {
   saveSettingsAndSecrets,
 } from '../lib/storage.ts';
 import {
-  ensureLocalLayaDecision,
   ensureLocalLlamaServer,
-  fetchLocalModelsCatalog,
+  fetchLocalModelEntries,
   probeWatchdogEndpoint,
   switchLocalModel,
 } from '../lib/watchdog-client.ts';
@@ -24,10 +23,8 @@ import { computeCacheKey, globalCacheManager } from '../lib/cache-manager.ts';
 import { WufProviderError } from '../providers/errors.ts';
 import { executeTranslation } from '../providers/index.ts';
 import { translateWithOpenCC } from '../providers/opencc.ts';
-import { LayaDecisionEngine } from '../subtitle/decision-engine.ts';
 import { runSubtitleDecisionPipeline } from '../subtitle/subtitle-decisions.ts';
 import { resolvePresetProvider } from '../lib/provider-profiles.ts';
-import { sanitizeSubtitleContext, subtitleContextPrompt, type SubtitleTopicDecision } from '../subtitle/translation-context.ts';
 import { FrameSessionManager } from '../vendor/wupage/background/frame-sessions';
 import { ProviderError } from '../vendor/wupage/shared/errors';
 import { toWuPageError } from '../webpage/wupage-errors.ts';
@@ -41,7 +38,6 @@ function getWuPageFrames(): FrameSessionManager {
   return wupageFrames;
 }
 
-const subtitleTopics = new Map<string, Promise<SubtitleTopicDecision>>();
 const webpageRequests = new Map<string, AbortController>();
 
 const stickyTabs = new Set<number>();
@@ -170,8 +166,14 @@ async function handleMessage(
         ]);
         const baseUrl = message.baseUrl ?? saved.providers.local.baseUrl;
         const apiKey = message.apiKey ?? secrets.providerApiKeys.local;
-        const models = await fetchLocalModelsCatalog(baseUrl, apiKey);
-        return { ok: true, data: { models } };
+        const modelEntries = await fetchLocalModelEntries(baseUrl, apiKey);
+        return {
+          ok: true,
+          data: {
+            models: modelEntries.map(entry => entry.id),
+            modelEntries,
+          },
+        };
       }
 
       case 'wuf:probe-watchdog': {
@@ -187,7 +189,7 @@ async function handleMessage(
           message.baseUrl ?? snapshot.runtimeSettings.providers.local.baseUrl;
         const model =
           message.model ?? snapshot.runtimeSettings.providers.local.model;
-        await ensureLocalLlamaServer(baseUrl, model);
+        await ensureLocalLlamaServer(baseUrl, model, { apiKey: snapshot.apiKeys.local });
         const probe = await probeWatchdogEndpoint(baseUrl);
         return { ok: true, data: probe };
       }
@@ -207,30 +209,13 @@ async function handleMessage(
         const req = message.request;
         signal?.throwIfAborted();
         if (req.purpose === 'subtitle') {
-          const context = sanitizeSubtitleContext(req.subtitleContext);
-          let contextDecision: SubtitleTopicDecision | undefined;
-          if (context && saved.subtitles.decisionMode === 'laya') {
-            const topicKey = JSON.stringify([saved.subtitles.layaEndpointUrl, context.videoId, context.title, context.sample]);
-            let decision = subtitleTopics.get(topicKey);
-            if (!decision) {
-              const engine = new LayaDecisionEngine({ mode: 'laya', apiUrl: saved.subtitles.layaEndpointUrl });
-              decision = engine.classifyTopic(context.title || '', context.sample || '').then(result => {
-                if (engine.lastError) subtitleTopics.delete(topicKey);
-                return result;
-              });
-              if (subtitleTopics.size >= 32) subtitleTopics.delete(subtitleTopics.keys().next().value!);
-              subtitleTopics.set(topicKey, decision);
-            }
-            contextDecision = await decision;
-            if (contextDecision.topic) context.topic = contextDecision.topic;
-          }
           const provider = resolvePresetProvider(saved, secrets, 'subtitle', req.engine, req.modelOverride);
           const key = {
             sourceLang: req.sourceLanguage || 'auto', targetLang: req.targetLanguage,
             engine: req.engine,
             // A changed endpoint, model or prompt must not reuse old subtitles.
             model: JSON.stringify([provider.baseUrl, provider.effectiveModel,
-              subtitleContextPrompt(provider.systemPrompt, context, req.texts, req.targetLanguage),
+              provider.systemPrompt,
               req.applyOpenCC ?? saved.openccEnabled, req.openccVariant ?? saved.openccVariant]),
           };
           let metadata: TranslationResponse = {
@@ -238,10 +223,7 @@ async function handleMessage(
           };
           const checked = await runSubtitleDecisionPipeline(
             { texts: req.texts, sourceLanguage: req.sourceLanguage },
-            { ...saved, subtitles: { ...saved.subtitles, targetLanguage: req.targetLanguage,
-              // Laya selects context once per video; per-line checks stay local.
-              decisionMode: saved.subtitles.decisionMode === 'laya' ? 'off' : saved.subtitles.decisionMode,
-            } },
+            { ...saved, subtitles: { ...saved.subtitles, targetLanguage: req.targetLanguage } },
             async payload => {
               if (!payload.skipCache && payload.texts.length === 1) {
                 const cached = await globalCacheManager.get({ ...key, text: payload.texts[0] });
@@ -249,7 +231,7 @@ async function handleMessage(
               }
               const response = await executeTranslation(
                 { ...req, texts: payload.texts }, saved, secrets,
-                { subtitleRepair: payload.decisionRepair, subtitleContext: context },
+                { subtitleRepair: payload.decisionRepair },
               );
               metadata = response;
               return { ok: true, result: response.translations,
@@ -261,9 +243,6 @@ async function handleMessage(
               };
             },
             {
-              apiKey: saved.subtitles.decisionMode === 'custom'
-                ? secrets.providerApiKeys[saved.subtitles.decisionCustomBaseUrl === saved.providers.online.baseUrl ? 'online' : 'local']
-                : undefined,
               log: report => console.debug('Subtitle decision pipeline', report),
             },
           );
@@ -277,7 +256,6 @@ async function handleMessage(
             translations: checked.result as string[],
             decisionReport: checked.decisionReport,
             intentionalEmpty: checked.intentionalEmpty,
-            contextDecision,
           } };
         }
         // Page cache identity must reflect the effective provider, not only the
@@ -361,11 +339,9 @@ async function handleMessage(
             ensureLocalLlamaServer(
               snapshot.subtitleProvider.baseUrl,
               snapshot.subtitleProvider.effectiveModel,
+              { apiKey: snapshot.apiKeys.local },
             ),
           );
-        }
-        if (sub.decisionMode === 'laya' && sub.layaDecisionEnabled) {
-          tasks.push(ensureLocalLayaDecision(sub.layaEndpointUrl));
         }
         await Promise.all(tasks);
         return {
@@ -376,26 +352,6 @@ async function handleMessage(
             model: snapshot.subtitleProvider.effectiveModel,
           },
         };
-      }
-
-      case 'wuf:evaluate-subtitle-boundaries': {
-        const [saved, secrets] = await Promise.all([
-          loadSavedSettings(),
-          loadLocalSecrets(),
-        ]);
-        const sub = saved.subtitles;
-        const engine = new LayaDecisionEngine({
-          enabled: sub.decisionMode !== 'off',
-          mode: sub.decisionMode,
-          apiUrl: sub.layaEndpointUrl,
-          apiKey:
-            secrets.providerApiKeys.local || secrets.providerApiKeys.online || '',
-          customModel: sub.decisionCustomModel,
-          customBaseUrl:
-            sub.decisionCustomBaseUrl || saved.providers.local.baseUrl,
-        });
-        const result = await engine.evaluateBoundaries(message.segments);
-        return { ok: true, data: result };
       }
 
       case 'wuf:switch-local-model': {

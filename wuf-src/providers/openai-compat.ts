@@ -47,13 +47,13 @@ export function buildThinkingPayload(input: ThinkingPayloadInput): Record<string
 
   Object.assign(payload, extra);
 
-  if (openRouter) {
-    if (level === 'off') {
-      payload.reasoning = { enabled: false, exclude: true };
-    } else if (level !== 'auto') {
-      payload.reasoning = { effort: level, exclude: true };
-    }
+  if (level === 'off') {
+    payload.reasoning = payload.reasoning ?? { enabled: false, exclude: true };
+  } else if (level !== 'auto') {
+    payload.reasoning = payload.reasoning ?? { effort: level, exclude: true };
+  }
 
+  if (openRouter) {
     const existingProvider =
       extra.provider && typeof extra.provider === 'object' && !Array.isArray(extra.provider)
         ? (extra.provider as Record<string, unknown>)
@@ -158,10 +158,14 @@ export function buildChatCompletionRequestBody(
 
   const body: Record<string, unknown> = {
     ...extraAndThinking,
-    target_language: targetLangDesc,
-    // Known Riva requests already contain the instruction. WUF's core adds it
-    // only when a server-selected model needs the target-language hint.
-    ...(!isRiva ? { shinkansen_target_language: targetLangDesc } : {}),
+    // Known Riva requests already contain the instruction. Omit target_language so
+    // Watchdog/upstream never prepends the prefix a second time.
+    ...(!isRiva
+      ? {
+          target_language: targetLangDesc,
+          shinkansen_target_language: targetLangDesc,
+        }
+      : {}),
     messages: [
       { role: 'system', content: systemContent },
       { role: 'user', content: finalUserContent },
@@ -213,8 +217,14 @@ export async function translateWithOpenAICompat(
 
   if (provider.profileType === 'local') {
     try {
-      await ensureLocalLlamaServer(provider.baseUrl, effectiveModel, watchdogOptions);
+      await ensureLocalLlamaServer(provider.baseUrl, effectiveModel, {
+        ...watchdogOptions,
+        apiKey: provider.apiKey,
+      });
     } catch (err) {
+      if (err instanceof WufProviderError) {
+        throw err;
+      }
       throw new WufProviderError(
         err instanceof Error ? err.message : String(err),
         {
@@ -267,6 +277,9 @@ export async function translateWithOpenAICompat(
   try {
     json = await response.json();
   } catch (err) {
+    if (err instanceof WufProviderError) {
+      throw err;
+    }
     throw new WufProviderError('OpenAI-compatible endpoint returned non-JSON body', {
       code: 'INVALID_RESPONSE',
       provider: providerTag,

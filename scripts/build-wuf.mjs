@@ -1,4 +1,5 @@
-import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { copyFileSync, cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
@@ -110,3 +111,34 @@ await build({
 });
 
 console.log('[wuf-build] Built WUF extension to dist/wuf/');
+
+if (process.argv.includes('--store')) {
+  const storeDir = resolve(rootDir, 'dist', 'wuf-store');
+  const zipPath = resolve(rootDir, 'dist', 'wuf-translate-store.zip');
+  rmSync(storeDir, { recursive: true, force: true });
+  rmSync(zipPath, { force: true });
+  cpSync(outDir, storeDir, { recursive: true });
+  rmSync(resolve(storeDir, 'index.js'), { force: true });
+
+  if (process.argv.includes('--strip-key')) {
+    const storeManifestPath = resolve(storeDir, 'manifest.json');
+    const storeManifest = JSON.parse(readFileSync(storeManifestPath, 'utf8'));
+    delete storeManifest.key;
+    writeFileSync(storeManifestPath, JSON.stringify(storeManifest, null, 2) + '\n', 'utf8');
+  }
+
+  if (process.platform === 'win32') {
+    execFileSync(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-Command',
+        `Compress-Archive -Path '${storeDir}\\*' -DestinationPath '${zipPath}' -Force`,
+      ],
+      { stdio: 'inherit' },
+    );
+  } else {
+    execFileSync('zip', ['-r', '-q', zipPath, '.'], { cwd: storeDir, stdio: 'inherit' });
+  }
+  console.log(`[wuf-build] Packaged store ZIP to dist/wuf-translate-store.zip`);
+}

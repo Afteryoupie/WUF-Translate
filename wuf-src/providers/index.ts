@@ -11,7 +11,6 @@ import { translateWithGoogle } from './google-translate.ts';
 import { translateWithOpenAICompat } from './openai-compat.ts';
 import { translateWithOpenCC } from './opencc.ts';
 import { subtitleRepairPrompt, type DecisionRepairItem } from '../subtitle/subtitle-decisions.ts';
-import { subtitleContextPrompt, type SubtitleTranslationContext } from '../subtitle/translation-context.ts';
 import { createProvider as createWuPageProvider } from '../vendor/wupage/core/background/providers';
 
 export interface ExecuteTranslationOptions {
@@ -20,7 +19,6 @@ export interface ExecuteTranslationOptions {
   platform?: string;
   watchdogOptions?: WatchdogClientOptions;
   subtitleRepair?: DecisionRepairItem[];
-  subtitleContext?: SubtitleTranslationContext;
 }
 
 export async function executeTranslation(
@@ -93,7 +91,7 @@ export async function executeTranslation(
     );
     if (purpose === 'subtitle') {
       provider.systemPrompt = subtitleRepairPrompt(
-        subtitleContextPrompt(provider.systemPrompt, options?.subtitleContext, texts, effectiveTargetLang),
+        provider.systemPrompt,
         { decisionRepair: options?.subtitleRepair },
       );
     }

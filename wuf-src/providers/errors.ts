@@ -47,67 +47,76 @@ export async function fetchWithTimeoutAndCancel(
 
   const controller = new AbortController();
   let timedOut = false;
+  let callerAborted = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  let rejectTermination!: (err: WufProviderError) => void;
+  const terminationPromise = new Promise<never>((_, reject) => {
+    rejectTermination = reject;
+  });
+  // Prevent unhandledRejection when termination occurs outside an active race.
+  terminationPromise.catch(() => {});
+
+  let listenerAttached = false;
+  const cleanup = () => {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
+    if (listenerAttached && signal) {
+      listenerAttached = false;
+      signal.removeEventListener('abort', onCallerAbort);
+    }
+  };
 
   const onCallerAbort = () => {
+    if (callerAborted || timedOut) return;
+    callerAborted = true;
     controller.abort(signal?.reason ?? new DOMException('Aborted', 'AbortError'));
-  };
-  signal?.addEventListener('abort', onCallerAbort, { once: true });
-
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      timedOut = true;
-      controller.abort(new DOMException('TimeoutError', 'TimeoutError'));
-      reject(
-        new WufProviderError(`Request timed out after ${timeoutMs}ms`, {
-          code: 'TIMEOUT',
-          provider,
-        }),
-      );
-    }, timeoutMs);
-  });
-
-  const abortPromise = new Promise<never>((_, reject) => {
-    if (!signal) return;
-    signal.addEventListener(
-      'abort',
-      () => {
-        reject(
-          new WufProviderError('Request was cancelled by caller', {
-            code: 'ABORTED',
-            provider,
-          }),
-        );
-      },
-      { once: true },
+    cleanup();
+    rejectTermination(
+      new WufProviderError('Request was cancelled by caller', {
+        code: 'ABORTED',
+        provider,
+      }),
     );
-  });
+  };
+  if (signal) {
+    listenerAttached = true;
+    signal.addEventListener('abort', onCallerAbort);
+  }
 
-  try {
-    const fetchPromise = fetch(url, {
-      ...init,
-      signal: controller.signal,
-    });
-    return await Promise.race([fetchPromise, timeoutPromise, abortPromise]);
-  } catch (err) {
-    if (err instanceof WufProviderError) {
-      throw err;
-    }
+  timer = setTimeout(() => {
+    if (callerAborted || timedOut) return;
+    timedOut = true;
+    controller.abort(new DOMException('TimeoutError', 'TimeoutError'));
+    cleanup();
+    rejectTermination(
+      new WufProviderError(`Request timed out after ${timeoutMs}ms`, {
+        code: 'TIMEOUT',
+        provider,
+      }),
+    );
+  }, timeoutMs);
+  (timer as { unref?: () => void }).unref?.();
+
+  const mapTerminatedError = (err: unknown): WufProviderError => {
+    if (err instanceof WufProviderError) return err;
     if (timedOut) {
-      throw new WufProviderError(`Request timed out after ${timeoutMs}ms`, {
+      return new WufProviderError(`Request timed out after ${timeoutMs}ms`, {
         code: 'TIMEOUT',
         provider,
         cause: err,
       });
     }
-    if (signal?.aborted) {
-      throw new WufProviderError('Request was cancelled by caller', {
+    if (callerAborted || signal?.aborted) {
+      return new WufProviderError('Request was cancelled by caller', {
         code: 'ABORTED',
         provider,
         cause: err,
       });
     }
-    throw new WufProviderError(
+    return new WufProviderError(
       err instanceof Error ? err.message : String(err),
       {
         code: 'HTTP_ERROR',
@@ -115,10 +124,70 @@ export async function fetchWithTimeoutAndCancel(
         cause: err,
       },
     );
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-    signal?.removeEventListener('abort', onCallerAbort);
+  };
+
+  const wrapBodyReader = <T>(originalFn: () => Promise<T>): (() => Promise<T>) => {
+    return async (): Promise<T> => {
+      if (timedOut) {
+        throw new WufProviderError(`Request timed out after ${timeoutMs}ms`, {
+          code: 'TIMEOUT',
+          provider,
+        });
+      }
+      if (callerAborted || signal?.aborted) {
+        throw new WufProviderError('Request was cancelled by caller', {
+          code: 'ABORTED',
+          provider,
+        });
+      }
+      try {
+        return await Promise.race([originalFn(), terminationPromise]);
+      } catch (err) {
+        if (err instanceof WufProviderError || timedOut || callerAborted || signal?.aborted) {
+          throw mapTerminatedError(err);
+        }
+        throw err;
+      } finally {
+        cleanup();
+      }
+    };
+  };
+
+  let response: Response;
+  try {
+    const fetchPromise = fetch(url, {
+      ...init,
+      signal: controller.signal,
+    });
+    response = await Promise.race([fetchPromise, terminationPromise]);
+  } catch (err) {
+    cleanup();
+    throw mapTerminatedError(err);
   }
+
+  Object.defineProperty(response, 'json', {
+    value: wrapBodyReader(response.json.bind(response)),
+    configurable: true,
+  });
+  Object.defineProperty(response, 'text', {
+    value: wrapBodyReader(response.text.bind(response)),
+    configurable: true,
+  });
+  Object.defineProperty(response, 'arrayBuffer', {
+    value: wrapBodyReader(response.arrayBuffer.bind(response)),
+    configurable: true,
+  });
+  if (response.body && typeof response.body.cancel === 'function') {
+    const originalCancel = response.body.cancel.bind(response.body);
+    Object.defineProperty(response.body, 'cancel', {
+      value: (reason?: unknown) => {
+        cleanup();
+        return originalCancel(reason);
+      },
+      configurable: true,
+    });
+  }
+  return response;
 }
 
 export async function extractHttpErrorMessage(response: Response): Promise<string> {
@@ -148,7 +217,10 @@ export async function extractHttpErrorMessage(response: Response): Promise<strin
       // Not JSON; fall through to plain text preview
     }
     return `HTTP ${response.status}: ${text.slice(0, 240).trim()}`;
-  } catch {
+  } catch (err) {
+    if (err instanceof WufProviderError && (err.code === 'TIMEOUT' || err.code === 'ABORTED')) {
+      throw err;
+    }
     return `HTTP ${response.status}`;
   }
 }

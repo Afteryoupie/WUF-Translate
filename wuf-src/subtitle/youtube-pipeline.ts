@@ -182,7 +182,6 @@ export interface AsrRawSegment {
   normText?: string;
   startMs: number;
   endMs?: number;
-  jevBreakBefore?: boolean | null;
 }
 
 export interface MergedAsrSentence {
@@ -260,13 +259,7 @@ export function heuristicMergeAsr(
       SENTENCE_TERMINATOR_RE.test(prevText) && !ABBREVIATION_END_RE.test(prevText);
 
     let shouldBreak = false;
-    if (wouldExceedWordCap || isLongSilence) {
-      shouldBreak = true;
-    } else if (seg.jevBreakBefore === true) {
-      shouldBreak = true;
-    } else if (seg.jevBreakBefore === false) {
-      shouldBreak = false;
-    } else if (endsWithPunct || isLocalGapBreak) {
+    if (wouldExceedWordCap || isLongSilence || endsWithPunct || isLocalGapBreak) {
       shouldBreak = true;
     }
 
@@ -279,35 +272,6 @@ export function heuristicMergeAsr(
 
   flush();
   return sentences;
-}
-
-export async function refineAsrBoundaries<T extends AsrRawSegment>(
-  rawSegments: T[],
-  config: { jevEnabled?: boolean; decisionMode?: 'laya' | 'custom' | 'off' } | undefined,
-  requestBoundaries: (segments: T[]) => Promise<{ ok?: boolean; breakBefore?: Array<boolean | null> }>,
-): Promise<T[]> {
-  if (!Array.isArray(rawSegments) || rawSegments.length < 2) return rawSegments;
-  const enabled =
-    config?.decisionMode !== undefined
-      ? config.decisionMode !== 'off'
-      : Boolean(config?.jevEnabled);
-  if (!enabled) return rawSegments;
-
-  try {
-    const resp = await requestBoundaries(rawSegments);
-    if (!resp?.ok || !Array.isArray(resp.breakBefore)) {
-      return rawSegments;
-    }
-    return rawSegments.map((seg, i) => {
-      const hint = resp.breakBefore?.[i];
-      if (typeof hint === 'boolean') {
-        return { ...seg, jevBreakBefore: hint };
-      }
-      return { ...seg };
-    });
-  } catch {
-    return rawSegments;
-  }
 }
 
 export interface AsrParsedEntry {

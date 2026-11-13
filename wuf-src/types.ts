@@ -25,9 +25,6 @@ export const TRANSLATION_ENGINES = [
 ] as const;
 export type TranslationEngineId = (typeof TRANSLATION_ENGINES)[number];
 
-export const SUBTITLE_DECISION_MODES = ['laya', 'custom', 'off'] as const;
-export type SubtitleDecisionMode = (typeof SUBTITLE_DECISION_MODES)[number];
-
 export const ROUTING_SORTS = ['auto', 'throughput', 'latency', 'price'] as const;
 export type RoutingSort = (typeof ROUTING_SORTS)[number];
 
@@ -86,11 +83,6 @@ export interface SubtitleTranslationPreset {
   systemPrompt: string;
   batchWindowSec: number;
   prefetchLeadSec: number;
-  decisionMode: SubtitleDecisionMode;
-  layaDecisionEnabled: boolean;
-  layaEndpointUrl: string;
-  decisionCustomModel: string;
-  decisionCustomBaseUrl: string;
 }
 
 export interface WufSettings {
@@ -124,20 +116,6 @@ export interface WatchdogModelInfo {
   idle_timeout?: number;
 }
 
-export interface WatchdogDecisionSnapshot {
-  status: 'sleeping' | 'starting' | 'running' | string;
-  current_model?: string;
-  current_model_id?: string;
-  active_requests?: number;
-  device?: string;
-  idle_timeout?: number;
-  idle_remaining?: number;
-  auto_sleep_enabled?: boolean;
-  runtime_available?: boolean;
-  endpoint?: string;
-  last_error?: string;
-}
-
 export interface WatchdogStatusResponse {
   status: 'sleeping' | 'starting' | 'running';
   current_model?: string;
@@ -150,7 +128,6 @@ export interface WatchdogStatusResponse {
   auto_sleep_enabled?: boolean;
   active_requests?: number;
   request_count?: number;
-  decision?: WatchdogDecisionSnapshot;
 }
 
 export interface WatchdogWakeResponse {
@@ -169,7 +146,6 @@ export interface TranslationRequest {
   modelOverride?: string;
   applyOpenCC?: boolean;
   openccVariant?: OpenCCVariant;
-  subtitleContext?: import('./subtitle/translation-context.ts').SubtitleTranslationContext;
   webpageContext?: string;
   preservePlaceholders?: boolean;
   wupageSession?: { id: string; documentKey: string };
@@ -188,7 +164,6 @@ export interface TranslationResponse {
   openccApplied?: OpenCCVariant;
   decisionReport?: import('./subtitle/subtitle-decisions.ts').SubtitleDecisionReport;
   intentionalEmpty?: number[];
-  contextDecision?: import('./subtitle/translation-context.ts').SubtitleTopicDecision;
 }
 
 export type RuntimeRequestMessage =
@@ -234,10 +209,6 @@ export type RuntimeRequestMessage =
     }
   | {
       type: 'wuf:warmup-youtube';
-    }
-  | {
-      type: 'wuf:evaluate-subtitle-boundaries';
-      segments: Array<{ text: string; startMs: number; endMs?: number }>;
     }
   | {
       type: 'wuf:switch-local-model';

@@ -1,6 +1,10 @@
 import type { ProviderProfileType } from '../types.ts';
 import { inferProviderType } from './provider-performance.ts';
-import { fetchLocalModelsCatalog } from './watchdog-client.ts';
+import {
+  fetchLocalModelEntries,
+  resolveSavedModelId,
+  type LocalModelEntry,
+} from './watchdog-client.ts';
 
 export interface PickerControlLike {
   value: string;
@@ -37,30 +41,31 @@ function createOption(text: string, value: string): { text: string; value: strin
 
 function populateSelectOptions(
   select: PickerControlLike,
-  models: string[],
+  models: LocalModelEntry[],
   savedModel: string,
   defaultLabel: string,
-): void {
+): { resolved: string; normalizedFromAlias: boolean } {
   const items: Array<{ text: string; value: string }> = [
     createOption(defaultLabel, ''),
   ];
   const seen = new Set<string>(['']);
   for (const model of models) {
-    if (!seen.has(model)) {
-      seen.add(model);
-      items.push(createOption(model, model));
+    if (!seen.has(model.id)) {
+      seen.add(model.id);
+      items.push(createOption(model.name || model.id, model.id));
     }
   }
-  const trimmedSaved = savedModel.trim();
-  if (trimmedSaved && !seen.has(trimmedSaved)) {
-    items.push(createOption(trimmedSaved, trimmedSaved));
+  const { resolved, normalizedFromAlias } = resolveSavedModelId(savedModel, models);
+  if (resolved && !seen.has(resolved)) {
+    items.push(createOption(resolved, resolved));
   }
   if (typeof select.replaceChildren === 'function') {
     select.replaceChildren(...items);
   } else {
     select.options = items;
   }
-  select.value = trimmedSaved;
+  select.value = resolved;
+  return { resolved, normalizedFromAlias };
 }
 
 /**
@@ -82,7 +87,9 @@ export function bindLocalModelPicker(bindings: LocalModelPickerBindings): () => 
     onModelChange,
   } = bindings;
 
-  let requestToken = 0;
+  let refreshToken = 0;
+  let selectionToken = 0;
+  let syncingInput = false;
 
   const isLocalActive = (): boolean => {
     if (getProviderType) {
@@ -94,21 +101,34 @@ export function bindLocalModelPicker(bindings: LocalModelPickerBindings): () => 
   const notifyModelInput = (nextValue: string): void => {
     input.value = nextValue;
     select.value = nextValue;
-    input.dispatchEvent(new Event('input'));
+    syncingInput = true;
+    try {
+      input.dispatchEvent(new Event('input'));
+    } finally {
+      syncingInput = false;
+    }
     onModelChange?.(nextValue);
   };
 
   select.addEventListener('change', () => {
+    selectionToken++;
     notifyModelInput(select.value);
   });
 
   clear.addEventListener('click', () => {
+    selectionToken++;
     notifyModelInput('');
   });
 
+  input.addEventListener('input', () => {
+    if (!syncingInput) {
+      selectionToken++;
+    }
+  });
+
   const update = async (): Promise<void> => {
-    const currentToken = ++requestToken;
-    const savedModel = input.value.trim();
+    const currentRefreshToken = ++refreshToken;
+    const currentSelectionToken = selectionToken;
 
     if (!isLocalActive()) {
       input.hidden = false;
@@ -124,35 +144,60 @@ export function bindLocalModelPicker(bindings: LocalModelPickerBindings): () => 
     status.textContent = t('options.localModel.loading');
 
     try {
-      const models = await fetchLocalModelsCatalog(endpoint, key);
-      if (currentToken !== requestToken || !isLocalActive()) {
+      const models = await fetchLocalModelEntries(endpoint, key);
+      if (currentRefreshToken !== refreshToken) {
         return;
       }
-      populateSelectOptions(
+      if (!isLocalActive()) {
+        input.hidden = false;
+        select.hidden = true;
+        status.textContent = '';
+        return;
+      }
+      if (currentSelectionToken !== selectionToken) {
+        status.textContent = t('options.localModel.ready');
+        return;
+      }
+      const currentSaved = input.value.trim();
+      const { resolved, normalizedFromAlias } = populateSelectOptions(
         select,
         models,
-        input.value,
+        currentSaved,
         t('options.localModel.serverDefault'),
       );
+      if (normalizedFromAlias && resolved !== currentSaved) {
+        notifyModelInput(resolved);
+      }
       input.hidden = true;
       select.hidden = false;
       status.textContent = t('options.localModel.ready');
     } catch {
-      if (currentToken !== requestToken || !isLocalActive()) {
+      if (currentRefreshToken !== refreshToken) {
         return;
       }
+      if (!isLocalActive()) {
+        input.hidden = false;
+        select.hidden = true;
+        status.textContent = '';
+        return;
+      }
+      if (currentSelectionToken !== selectionToken) {
+        status.textContent = t('options.localModel.offlineError');
+        return;
+      }
+      const currentSaved = input.value.trim();
       populateSelectOptions(
         select,
         [],
-        savedModel,
+        currentSaved,
         t('options.localModel.serverDefault'),
       );
       input.hidden = false;
       select.hidden = false;
-      select.value = savedModel;
+      select.value = currentSaved;
       status.textContent = t('options.localModel.offlineError');
     } finally {
-      if (currentToken === requestToken) {
+      if (currentRefreshToken === refreshToken) {
         refresh.disabled = false;
       }
     }

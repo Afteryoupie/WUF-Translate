@@ -8,6 +8,7 @@ import type {
 } from '../types.ts';
 import { applyI18nToDom, resolveUiLocale, t } from '../i18n/index.ts';
 import { sendWufRuntimeMessage } from '../lib/runtime-client.ts';
+import { resolveSavedModelId, type LocalModelEntry } from '../lib/watchdog-client.ts';
 import { applyThemeMode } from '../ui/theme-init.ts';
 
 function shortModel(name: string): string {
@@ -60,6 +61,7 @@ export async function initPopup(): Promise<void> {
   const statusDot = document.getElementById('wuf-status-dot');
   const statusText = document.getElementById('wuf-status-text');
   const wakeBtn = document.getElementById('wuf-wake-btn') as HTMLButtonElement | null;
+  const watchdogGuideRow = document.getElementById('wuf-watchdog-guide-row');
   const engineSelect = document.getElementById('wuf-engine-select') as HTMLSelectElement | null;
   const localModelSelect = document.getElementById('wuf-local-model-select') as HTMLSelectElement | null;
 
@@ -129,6 +131,7 @@ export async function initPopup(): Promise<void> {
         : t(locale, saved.webpage.engine === 'google-translate' ? 'engine.googleTranslate' : 'engine.openaiCompatOnline');
     }
     if (!usesLocalModel && wakeBtn) wakeBtn.hidden = true;
+    if (!usesLocalModel && watchdogGuideRow) watchdogGuideRow.hidden = true;
 
     // Pill
     if (modelPill) {
@@ -318,7 +321,9 @@ export async function initPopup(): Promise<void> {
   };
 
   // 5. Watchdog Probe & Models
+  let watchdogToken = 0;
   const refreshWatchdog = async () => {
+    const myToken = ++watchdogToken;
     if (!currentSnapshot) return;
     if (currentSnapshot.savedSettings.webpage.engine !== 'openai-compat-local') return;
     const baseUrl = currentSnapshot.savedSettings.providers.local.baseUrl;
@@ -326,7 +331,7 @@ export async function initPopup(): Promise<void> {
       type: 'wuf:probe-watchdog',
       baseUrl,
     });
-    if (currentSnapshot.savedSettings.webpage.engine !== 'openai-compat-local') return;
+    if (myToken !== watchdogToken || currentSnapshot.savedSettings.webpage.engine !== 'openai-compat-local') return;
 
     if (statusDot) {
       statusDot.className = 'wuf-dot';
@@ -336,11 +341,13 @@ export async function initPopup(): Promise<void> {
       if (statusDot) statusDot.classList.add('offline');
       if (statusText) statusText.textContent = t(currentLocale, 'popup.statusOffline');
       if (wakeBtn) wakeBtn.hidden = true;
+      if (watchdogGuideRow) watchdogGuideRow.hidden = false;
       return;
     }
 
     const probe = probeResp.data;
     if (statusDot) statusDot.classList.add(probe.state);
+    if (watchdogGuideRow) watchdogGuideRow.hidden = probe.state !== 'offline';
 
     if (statusText) {
       switch (probe.state) {
@@ -366,32 +373,46 @@ export async function initPopup(): Promise<void> {
 
     // Populate local models
     if (localModelSelect) {
-      const modelsResp = await sendWufRuntimeMessage<{ models: string[] }>({
+      const modelsResp = await sendWufRuntimeMessage<{
+        models: string[];
+        modelEntries?: LocalModelEntry[];
+      }>({
         type: 'wuf:list-local-models',
         baseUrl,
       });
-      const list = modelsResp.ok ? modelsResp.data.models : (probe.models || []);
-      const currentChoice =
+      if (myToken !== watchdogToken || currentSnapshot.savedSettings.webpage.engine !== 'openai-compat-local') return;
+      const entries: LocalModelEntry[] = modelsResp.ok
+        ? (modelsResp.data.modelEntries || modelsResp.data.models.map(id => ({ id, name: id })))
+        : (probe.models || []).map(id => ({ id, name: id }));
+      const rawChoice =
         currentSnapshot.savedSettings.webpage.customModelOverride ||
         currentSnapshot.savedSettings.providers.local.model ||
         '';
+      const { resolved: currentChoice } = resolveSavedModelId(rawChoice, entries);
+
+      const finalEntries = [...entries];
+      if (currentChoice && !finalEntries.some(entry => entry.id === currentChoice)) {
+        finalEntries.push({ id: currentChoice, name: currentChoice });
+      }
 
       localModelSelect.innerHTML = '';
       const defOpt = document.createElement('option');
       defOpt.value = '';
       defOpt.textContent = `— ${t(currentLocale, 'common.serverDefault')} —`;
+      defOpt.selected = currentChoice === '';
       localModelSelect.appendChild(defOpt);
 
-      for (const m of list) {
+      for (const entry of finalEntries) {
         const opt = document.createElement('option');
-        opt.value = m;
-        opt.textContent = shortModel(m);
-        opt.title = m;
-        if (m === currentChoice || m === probe.currentModelId) {
+        opt.value = entry.id;
+        opt.textContent = shortModel(entry.name || entry.id);
+        opt.title = entry.id;
+        if (entry.id === currentChoice) {
           opt.selected = true;
         }
         localModelSelect.appendChild(opt);
       }
+      localModelSelect.value = currentChoice;
     }
   };
 
@@ -657,9 +678,11 @@ export async function initPopup(): Promise<void> {
   // Engine Select
   engineSelect?.addEventListener('change', async () => {
     if (!currentSnapshot) return;
+    watchdogToken++;
     const engine = engineSelect.value as TranslationEngineId;
     await saveSettings({
       webpage: { ...currentSnapshot.savedSettings.webpage, engine },
+      subtitles: { ...currentSnapshot.savedSettings.subtitles, engine },
     });
     await refreshWatchdog();
   });
@@ -667,6 +690,7 @@ export async function initPopup(): Promise<void> {
   // Local Model Override
   localModelSelect?.addEventListener('change', async () => {
     if (!currentSnapshot) return;
+    watchdogToken++;
     const chosen = localModelSelect.value;
     await saveSettings({
       webpage: { ...currentSnapshot.savedSettings.webpage, customModelOverride: chosen },

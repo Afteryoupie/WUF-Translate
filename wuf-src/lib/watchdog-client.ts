@@ -3,14 +3,15 @@ import type {
   WatchdogStatusResponse,
   WatchdogWakeResponse,
 } from '../types.ts';
+import { WufProviderError } from '../providers/errors.ts';
 
 export const WUF_NATIVE_HOST = 'com.wuf_translate.watchdog';
 
 const startingServers = new Map<string, Promise<void>>();
-const startingLaya = new Map<string, Promise<void>>();
 
 export interface WatchdogClientOptions {
   assumeWatchdog?: boolean;
+  apiKey?: string;
   probeTimeoutMs?: number;
   wakeTimeoutMs?: number;
   startupDeadlineMs?: number;
@@ -38,7 +39,7 @@ export function isLoopbackUrl(rawUrl: string): boolean {
 }
 
 /**
- * Watchdog management APIs (/api/status, /api/wake, /api/switch, /api/decision/*)
+ * Watchdog management APIs (/api/status, /api/wake, /api/switch)
  * must ONLY be called against recognized Watchdog loopback endpoints.
  * Ordinary OpenAI, Ollama, direct llama-server on other ports, LAN, and cloud
  * endpoints must never receive Watchdog management calls.
@@ -65,7 +66,9 @@ export function resolveModelsEndpointUrl(baseUrl: string): string {
 
 export function isModelPathOrDefaultAlias(id: string): boolean {
   const trimmed = id.trim();
-  if (!trimmed || trimmed === 'default') return true;
+  const lower = trimmed.toLowerCase();
+  // Watchdog exposes model paths, 'default', and Apple Foundation guardrail mode ('permissive') in /v1/models.
+  if (!trimmed || lower === 'default' || lower === 'permissive') return true;
   if (trimmed.startsWith('/') || trimmed.includes('\\') || /^[A-Za-z]:/.test(trimmed)) {
     return true;
   }
@@ -75,7 +78,7 @@ export function isModelPathOrDefaultAlias(id: string): boolean {
   return false;
 }
 
-export function extractUsableModelIds(payload: unknown): string[] {
+export function extractRawModelIds(payload: unknown): string[] {
   if (!payload || typeof payload !== 'object') return [];
   const data = (payload as { data?: unknown }).data;
   if (!Array.isArray(data)) return [];
@@ -86,18 +89,55 @@ export function extractUsableModelIds(payload: unknown): string[] {
     const id = (item as { id?: unknown }).id;
     if (typeof id !== 'string') continue;
     const trimmed = id.trim();
-    if (isModelPathOrDefaultAlias(trimmed) || seen.has(trimmed)) continue;
+    if (!trimmed || seen.has(trimmed)) continue;
     seen.add(trimmed);
     models.push(trimmed);
   }
   return models;
 }
 
-export async function fetchLocalModelsCatalog(
+export function extractUsableModelIds(payload: unknown): string[] {
+  return extractRawModelIds(payload).filter(id => !isModelPathOrDefaultAlias(id));
+}
+
+export interface LocalModelEntry {
+  id: string;
+  name: string;
+  aliases?: string[];
+  fromWatchdog?: boolean;
+}
+
+export function resolveSavedModelId(
+  savedModel: string,
+  models: LocalModelEntry[],
+): { resolved: string; normalizedFromAlias: boolean } {
+  const trimmed = savedModel.trim();
+  if (!trimmed) {
+    return { resolved: '', normalizedFromAlias: false };
+  }
+  const hasWatchdog = models.some(entry => entry.fromWatchdog);
+  if (hasWatchdog) {
+    if (trimmed.toLowerCase() === 'default') {
+      return { resolved: '', normalizedFromAlias: true };
+    }
+    for (const entry of models) {
+      if (entry.id === trimmed) {
+        return { resolved: entry.id, normalizedFromAlias: false };
+      }
+      if (entry.aliases?.includes(trimmed)) {
+        return { resolved: entry.id, normalizedFromAlias: true };
+      }
+    }
+  }
+  return { resolved: trimmed, normalizedFromAlias: false };
+}
+
+export async function fetchLocalModelEntries(
   baseUrl: string,
   apiKey: string = '',
   signal?: AbortSignal,
-): Promise<string[]> {
+  options?: Pick<WatchdogClientOptions, 'assumeWatchdog' | 'probeTimeoutMs'>,
+): Promise<LocalModelEntry[]> {
   const parsed = parseHttpUrl(baseUrl);
   if (!parsed) {
     throw new Error('Invalid local endpoint URL');
@@ -115,7 +155,68 @@ export async function fetchLocalModelsCatalog(
     throw new Error(`Failed to load models from ${modelsUrl}: HTTP ${response.status}`);
   }
   const json: unknown = await response.json();
-  return extractUsableModelIds(json);
+  const rawIds = extractRawModelIds(json);
+
+  const nameById = new Map<string, string>();
+  const aliasesById = new Map<string, string[]>();
+  let confirmedWatchdog = false;
+  let filteredIds = rawIds;
+
+  if (isWatchdogLoopbackUrl(parsed.href, options)) {
+    try {
+      const statusUrl = new URL('/api/status', parsed).href;
+      const statusResp = await fetch(statusUrl, {
+        ...(Object.keys(headers).length > 0 ? { headers } : {}),
+        signal: signal ?? AbortSignal.timeout(options?.probeTimeoutMs ?? 2000),
+      });
+      if (statusResp.ok) {
+        const statusJson: unknown = await statusResp.json();
+        if (isValidWatchdogStatus(statusJson) && Array.isArray(statusJson.models)) {
+          confirmedWatchdog = true;
+          const pathAliases = new Set<string>();
+          for (const m of statusJson.models) {
+            const id = typeof m.id === 'string' ? m.id.trim() : '';
+            const name = typeof m.name === 'string' ? m.name.trim() : '';
+            const path = typeof m.path === 'string' ? m.path.trim() : '';
+            if (id) {
+              if (name) nameById.set(id, name);
+              const aliases = [path, name].filter(
+                (a): a is string => Boolean(a) && a !== id,
+              );
+              if (aliases.length > 0) {
+                aliasesById.set(id, aliases);
+              }
+            }
+            if (path && path !== id) pathAliases.add(path);
+          }
+          filteredIds = rawIds.filter(
+            id => !pathAliases.has(id) && (!isModelPathOrDefaultAlias(id) || aliasesById.has(id) || nameById.has(id)),
+          );
+        }
+      }
+    } catch {
+      // Fallback to raw model IDs when /api/status is unavailable
+    }
+  }
+
+  return filteredIds.map(id => {
+    const aliases = aliasesById.get(id);
+    return {
+      id,
+      name: nameById.get(id) || id,
+      ...(aliases ? { aliases } : {}),
+      fromWatchdog: confirmedWatchdog,
+    };
+  });
+}
+
+export async function fetchLocalModelsCatalog(
+  baseUrl: string,
+  apiKey: string = '',
+  signal?: AbortSignal,
+): Promise<string[]> {
+  const entries = await fetchLocalModelEntries(baseUrl, apiKey, signal);
+  return entries.map(entry => entry.id);
 }
 
 export function requestWatchdogNativeHost(): Promise<unknown> {
@@ -158,41 +259,81 @@ async function prepareLocalServer(
   const wakeTimeoutMs = options?.wakeTimeoutMs ?? 130000;
   const startupDeadlineMs = options?.startupDeadlineMs ?? 15000;
   const pollIntervalMs = options?.pollIntervalMs ?? 600;
+  const authHeaders: Record<string, string> = options?.apiKey?.trim()
+    ? { Authorization: `Bearer ${options.apiKey.trim()}` }
+    : {};
 
-  const probe = async (): Promise<WatchdogStatusResponse | null> => {
+  type ProbeOutcome =
+    | { kind: 'watchdog'; data: WatchdogStatusResponse }
+    | { kind: 'non-watchdog' }
+    | { kind: 'unreachable' };
+
+  const probe = async (): Promise<ProbeOutcome> => {
+    let response: Response;
     try {
-      const response = await fetch(checkUrl, {
+      response = await fetch(checkUrl, {
+        ...(Object.keys(authHeaders).length > 0 ? { headers: authHeaders } : {}),
         signal: AbortSignal.timeout(probeTimeoutMs),
       });
-      if (!response.ok) return null;
-      if (!watchdog) {
-        return { status: 'running' };
-      }
-      const json: unknown = await response.json();
-      return isValidWatchdogStatus(json) ? json : null;
     } catch {
-      return null;
+      return { kind: 'unreachable' };
+    }
+
+    if (response.status === 401 || response.status === 403) {
+      throw new WufProviderError(`HTTP ${response.status}: Unauthorized`, {
+        code: 'HTTP_ERROR',
+        provider: 'openai-compat-local',
+        status: response.status,
+      });
+    }
+
+    if (!watchdog) {
+      return { kind: 'non-watchdog' };
+    }
+
+    if (!response.ok) {
+      // An HTTP server is listening on port 8080 without Watchdog's /api/status; treat as non-Watchdog.
+      return { kind: 'non-watchdog' };
+    }
+
+    try {
+      const json: unknown = await response.json();
+      if (isValidWatchdogStatus(json)) {
+        return { kind: 'watchdog', data: json };
+      }
+      return { kind: 'non-watchdog' };
+    } catch {
+      return { kind: 'non-watchdog' };
     }
   };
 
-  let status = await probe();
-  if (!status) {
+  let outcome = await probe();
+  if (outcome.kind === 'non-watchdog') {
+    return;
+  }
+  if (!watchdog) {
+    // Non-Watchdog loopback endpoint is unreachable; let the caller's translation request surface the error without calling Native Host.
+    return;
+  }
+
+  if (outcome.kind === 'unreachable') {
     await requestWatchdogNativeHost();
     const deadline = Date.now() + startupDeadlineMs;
-    while (!status && Date.now() < deadline) {
+    while (outcome.kind === 'unreachable' && Date.now() < deadline) {
       await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
-      status = await probe();
+      outcome = await probe();
     }
-    if (!status) {
+    if (outcome.kind === 'non-watchdog') {
+      return;
+    }
+    if (outcome.kind === 'unreachable') {
       throw new Error(
         `無法連線到本機 LLM 服務，請啟動 WUF Watchdog（或註冊 ${WUF_NATIVE_HOST} 自動喚醒）。`,
       );
     }
   }
 
-  if (!watchdog) {
-    return;
-  }
+  const status = outcome.data;
 
   const target = status.models?.find(m =>
     [m.id, m.name, m.path].filter(Boolean).includes(model),
@@ -237,46 +378,13 @@ export async function ensureLocalLlamaServer(
     return;
   }
   const normalizedModel = model === 'default' ? '' : model.trim();
-  const key = JSON.stringify([url.origin, normalizedModel]);
+  const key = JSON.stringify([url.origin, normalizedModel, options?.apiKey?.trim() || '']);
   let pending = startingServers.get(key);
   if (!pending) {
     pending = prepareLocalServer(url, normalizedModel, options).finally(() => {
       startingServers.delete(key);
     });
     startingServers.set(key, pending);
-  }
-  return pending;
-}
-
-export async function ensureLocalLayaDecision(
-  apiUrl: string = 'http://127.0.0.1:8080/v1/systemone',
-  options?: Pick<WatchdogClientOptions, 'assumeWatchdog' | 'wakeTimeoutMs'>,
-): Promise<void> {
-  const url = parseHttpUrl(apiUrl);
-  if (!url || !isWatchdogLoopbackUrl(url.href, options)) {
-    return;
-  }
-  const key = url.origin;
-  let pending = startingLaya.get(key);
-  if (!pending) {
-    const wakeTimeoutMs = options?.wakeTimeoutMs ?? 130000;
-    pending = (async () => {
-      const wakeUrl = new URL('/api/decision/wake', url).href;
-      const response = await fetch(wakeUrl, {
-        method: 'POST',
-        signal: AbortSignal.timeout(wakeTimeoutMs),
-      });
-      if (!response.ok) {
-        throw new Error(`Laya 決策模型喚醒失敗：HTTP ${response.status}`);
-      }
-      const result = (await response.json()) as WatchdogWakeResponse;
-      if (result.status !== 'ok') {
-        throw new Error(result.message || 'Laya 決策模型載入失敗。');
-      }
-    })().finally(() => {
-      startingLaya.delete(key);
-    });
-    startingLaya.set(key, pending);
   }
   return pending;
 }

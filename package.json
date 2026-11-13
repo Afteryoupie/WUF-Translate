@@ -1,6 +1,6 @@
 {
   "name": "wuf-translate",
-  "version": "0.2.0",
+  "version": "0.2.2",
   "private": true,
   "description": "WUF Translate browser extension with the WuPage webpage translation engine",
   "license": "SEE LICENSE IN LICENSE",
@@ -8,6 +8,7 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "node scripts/build-wuf.mjs",
+    "build:store": "node scripts/build-wuf.mjs --store",
     "test": "npm run build && node --test tests/*.test.mjs"
   },
   "dependencies": {

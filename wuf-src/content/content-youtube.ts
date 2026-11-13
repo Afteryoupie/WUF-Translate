@@ -1,13 +1,11 @@
 import type { SettingsSnapshotPayload, TranslationResponse } from '../types.ts';
 import { sendWufRuntimeMessage } from '../lib/runtime-client.ts';
-import { buildSubtitleTranslationContext } from '../subtitle/translation-context.ts';
 import {
   chooseBestCaptionTrack,
   heuristicMergeAsr,
   parseAsrLlmOutput,
   parseCaptionResponse,
   planSubtitleWindowBatch,
-  refineAsrBoundaries,
   resolveAsrEntryTimeline,
   splitLongSubtitleCue,
   type AsrRawSegment,
@@ -31,7 +29,6 @@ export interface WufYouTubeNamespace {
   };
   chooseBestCaptionTrack: typeof chooseBestCaptionTrack;
   heuristicMergeAsr: typeof heuristicMergeAsr;
-  refineAsrBoundaries: typeof refineAsrBoundaries;
   parseAsrLlmOutput: typeof parseAsrLlmOutput;
   resolveAsrEntryTimeline: typeof resolveAsrEntryTimeline;
   splitLongSubtitleCue: typeof splitLongSubtitleCue;
@@ -489,24 +486,13 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
     state.translatingWindows.add(windowIndex);
 
     try {
-      const refined = state.isAsr && sub.decisionMode === 'custom' ? await refineAsrBoundaries(windowSegs, sub, async segments => {
-        const response = await sendWufRuntimeMessage<{ breakBefore: Array<boolean | null> }>({
-          type: 'wuf:evaluate-subtitle-boundaries', segments,
-        });
-        return response.ok ? { ok: true, ...response.data } : { ok: false };
-      }) : windowSegs;
-      if (!state.active || gen !== state.sessionGen) return false;
-      const merged = heuristicMergeAsr(refined, state.sourceLanguage);
+      const merged = heuristicMergeAsr(windowSegs, state.sourceLanguage);
       if (merged.length === 0) {
         state.translatedWindows.add(windowIndex);
         return true;
       }
 
       const isLocal = sub?.engine === 'openai-compat-local';
-      const title = globalThis.document?.querySelector('ytd-watch-metadata h1')?.textContent?.trim() ||
-        globalThis.document?.title?.replace(/ - YouTube$/, '') || '';
-      const videoId = new URL(globalThis.location?.href || 'https://www.youtube.com').searchParams.get('v') || '';
-      const subtitleContext = buildSubtitleTranslationContext(state.rawSegments, title, videoId);
 
       if (isLocal) {
         // Local translation models receive complete sentence groups sequentially.
@@ -517,7 +503,6 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
             request: {
               texts: [sentence.text], targetLanguage: sub.targetLanguage,
               sourceLanguage: state.sourceLanguage,
-              subtitleContext,
               engine: sub.engine, purpose: 'subtitle',
               modelOverride: sub.customModelOverride || undefined,
             },
@@ -534,7 +519,6 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
           request: {
             texts: merged.map(sentence => sentence.text), targetLanguage: sub.targetLanguage,
             sourceLanguage: state.sourceLanguage,
-            subtitleContext,
             engine: sub.engine, purpose: 'subtitle',
             modelOverride: sub.customModelOverride || undefined,
           },
@@ -666,7 +650,6 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
     YT: state,
     chooseBestCaptionTrack,
     heuristicMergeAsr,
-    refineAsrBoundaries,
     parseAsrLlmOutput,
     resolveAsrEntryTimeline,
     splitLongSubtitleCue,

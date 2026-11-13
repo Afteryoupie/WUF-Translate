@@ -3,7 +3,6 @@ import {
   OPENCC_VARIANTS,
   PROVIDER_PROFILE_TYPES,
   ROUTING_SORTS,
-  SUBTITLE_DECISION_MODES,
   THEME_MODES,
   THINKING_LEVELS,
   TRANSLATION_ENGINES,
@@ -11,7 +10,6 @@ import {
   type ActiveProviderConfig,
   type CustomProviderProfile,
   type ProviderProfileType,
-  type SubtitleDecisionMode,
   type SubtitleTranslationPreset,
   type TranslationEngineId,
   type WebpageTranslationPreset,
@@ -51,7 +49,7 @@ export const DEFAULT_LOCAL_PROFILE: Readonly<CustomProviderProfile> = Object.fre
 });
 
 export const DEFAULT_WEBPAGE_PRESET: Readonly<WebpageTranslationPreset> = Object.freeze({
-  engine: 'openai-compat-local',
+  engine: 'google-translate',
   targetLanguage: 'zh-TW',
   displayMode: 'bilingual',
   customModelOverride: '',
@@ -63,17 +61,12 @@ export const DEFAULT_SUBTITLE_SYSTEM_PROMPT =
   'Translate ALL speech to 台灣繁體中文. Output only one line, no explanations or punctuation. Keep names brands numbers and profanity. Remove sound-effect tags only. Never omit dialogue or complete unfinished sentences.';
 
 export const DEFAULT_SUBTITLE_PRESET: Readonly<SubtitleTranslationPreset> = Object.freeze({
-  engine: 'openai-compat-local',
+  engine: 'google-translate',
   targetLanguage: 'zh-TW',
   customModelOverride: '',
   systemPrompt: DEFAULT_SUBTITLE_SYSTEM_PROMPT,
   batchWindowSec: 30,
   prefetchLeadSec: 10,
-  decisionMode: 'laya',
-  layaDecisionEnabled: true,
-  layaEndpointUrl: 'http://127.0.0.1:8080/v1/systemone',
-  decisionCustomModel: '',
-  decisionCustomBaseUrl: '',
 });
 
 export const DEFAULT_SETTINGS: Readonly<WufSettings> = Object.freeze({
@@ -298,32 +291,6 @@ export function sanitizeSubtitlePreset(
       warnings?.push(`Invalid subtitle prefetchLeadSec: ${String(val)}`);
     }
   }
-  if (typeof obj.decisionCustomModel === 'string') {
-    result.decisionCustomModel = obj.decisionCustomModel.trim();
-  }
-  if (typeof obj.decisionCustomBaseUrl === 'string') {
-    result.decisionCustomBaseUrl = obj.decisionCustomBaseUrl.trim();
-  }
-  if (typeof obj.layaEndpointUrl === 'string' && obj.layaEndpointUrl.trim()) {
-    result.layaEndpointUrl = obj.layaEndpointUrl.trim();
-  }
-  if (typeof obj.decisionMode === 'string') {
-    if ((SUBTITLE_DECISION_MODES as readonly string[]).includes(obj.decisionMode)) {
-      result.decisionMode = obj.decisionMode as SubtitleDecisionMode;
-      result.layaDecisionEnabled = result.decisionMode === 'laya';
-    } else {
-      warnings?.push(`Invalid subtitle decisionMode: ${obj.decisionMode}`);
-    }
-  } else if (typeof obj.layaDecisionEnabled === 'boolean') {
-    result.layaDecisionEnabled = obj.layaDecisionEnabled;
-    if (obj.layaDecisionEnabled) {
-      result.decisionMode = 'laya';
-    } else if (result.decisionCustomModel) {
-      result.decisionMode = 'custom';
-    } else {
-      result.decisionMode = 'off';
-    }
-  }
   return result;
 }
 
@@ -442,15 +409,6 @@ export function applyRuntimePlatformAdaptations(
     runtime.subtitles.customModelOverride = localModelForPlatform(
       saved.subtitles.customModelOverride,
       saved.providers.local.baseUrl,
-      platform,
-    );
-  }
-  if (runtime.subtitles.decisionMode === 'custom') {
-    const decisionUrl =
-      saved.subtitles.decisionCustomBaseUrl || saved.providers.local.baseUrl;
-    runtime.subtitles.decisionCustomModel = localModelForPlatform(
-      saved.subtitles.decisionCustomModel,
-      decisionUrl,
       platform,
     );
   }
