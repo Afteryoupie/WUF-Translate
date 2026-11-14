@@ -48,6 +48,21 @@ function isSameTrack(
   );
 }
 
+/** Extracts the active YouTube video ID from watch query (`?v=`) or `/shorts|/embed|/live` paths. */
+export function getCurrentWatchVideoId(
+  loc: Pick<Location, 'search' | 'pathname'> | undefined = globalThis.location,
+): string {
+  try {
+    if (!loc) return '';
+    const v = new URLSearchParams(loc.search || '').get('v');
+    if (v) return v;
+    const match = (loc.pathname || '').match(/^\/(?:shorts|embed|live)\/([^/?#]+)/);
+    return match ? match[1] : '';
+  } catch {
+    return '';
+  }
+}
+
 /**
  * Selects the optimal YouTube caption track following WUF priority rules:
  * Manual exact target > Manual Chinese variant > Manual English >
@@ -623,7 +638,7 @@ export function parseYouTubeTimedTextJson3(data: {
       ...(endMs !== undefined ? { endMs } : {}),
     });
   }
-  return out;
+  return out.sort((a, b) => a.startMs - b.startMs);
 }
 
 export function parseYouTubeTimedTextXml(xmlText: string): AsrRawSegment[] {
@@ -732,4 +747,44 @@ export function planSubtitleWindowBatch(
     windowSegments,
     prefetchWindowIndex: shouldPrefetch ? nextWindowIndex : null,
   };
+}
+
+/** Checks whether two parsed caption segment arrays are identical in length, timing, and text. */
+export function areCaptionSegmentsEqual(
+  a: readonly AsrRawSegment[],
+  b: readonly AsrRawSegment[],
+): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (
+      a[i].startMs !== b[i].startMs ||
+      a[i].endMs !== b[i].endMs ||
+      a[i].text !== b[i].text
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Finds the earliest upcoming cue start within `maxLeadMs` when no cue covers `nowMs`,
+ * allowing immediate hide/swap if YouTube paints native captions slightly ahead of playback time.
+ */
+export function findPrepaintSnapMs(
+  cues: readonly { startMs: number; endMs: number }[],
+  nowMs: number,
+  maxLeadMs: number = 150,
+): number | null {
+  let nearestStart = Infinity;
+  for (const cue of cues) {
+    if (cue.startMs <= nowMs && nowMs <= cue.endMs) {
+      return null;
+    }
+    if (cue.startMs > nowMs && cue.startMs <= nowMs + maxLeadMs && cue.startMs < nearestStart) {
+      nearestStart = cue.startMs;
+    }
+  }
+  return Number.isFinite(nearestStart) ? nearestStart : null;
 }

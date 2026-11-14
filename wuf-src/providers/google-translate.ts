@@ -66,8 +66,7 @@ export async function translateWithGoogle(
     return [];
   }
 
-  const results: string[] = [];
-  for (const text of texts) {
+  const translateSingleText = async (text: string): Promise<string> => {
     // Google can translate or truncate our DOM placeholders. Keep them out of
     // the request and translate only the prose between them.
     const pieces = text.split(/(<<<WUF_(?:TAG|END)_\d+>>>|⟪WUPAGE\d+⟫)/g);
@@ -75,12 +74,10 @@ export async function translateWithGoogle(
       const prose = pieces.filter((_, index) => index % 2 === 0);
       const translated = await translateWithGoogle({ ...options, texts: prose });
       let cursor = 0;
-      results.push(pieces.map((piece, index) => index % 2 ? piece : translated[cursor++]).join(''));
-      continue;
+      return pieces.map((piece, index) => (index % 2 ? piece : translated[cursor++])).join('');
     }
     if (!text.trim()) {
-      results.push(text);
-      continue;
+      return text;
     }
 
     const url = new URL(endpointUrl);
@@ -123,8 +120,25 @@ export async function translateWithGoogle(
       });
     }
 
-    results.push(parseGoogleSinglePayload(json));
+    return parseGoogleSinglePayload(json);
+  };
+
+  if (texts.length === 1) {
+    return [await translateSingleText(texts[0])];
   }
+
+  const results = new Array<string>(texts.length);
+  const concurrency = Math.min(3, texts.length);
+  let nextIndex = 0;
+  await Promise.all(
+    Array.from({ length: concurrency }, async () => {
+      while (nextIndex < texts.length) {
+        signal?.throwIfAborted?.();
+        const index = nextIndex++;
+        results[index] = await translateSingleText(texts[index]);
+      }
+    }),
+  );
 
   return results;
 }

@@ -1,9 +1,19 @@
+import { getCurrentWatchVideoId } from '../subtitle/youtube-pipeline.ts';
+
 const TIMEDTEXT_EVENT_NAME = 'wuf-timedtext-captured';
 
-function isTimedTextUrl(url: string): boolean {
+export function isTimedTextUrl(
+  url: string,
+  currentVideoId: string = getCurrentWatchVideoId(),
+): boolean {
   try {
     const parsed = new URL(url, globalThis.location?.origin || 'https://www.youtube.com');
-    return parsed.pathname.includes('/api/timedtext');
+    if (!parsed.pathname.includes('/api/timedtext')) return false;
+    const reqVideoId = parsed.searchParams.get('v') || '';
+    if (reqVideoId && currentVideoId && reqVideoId !== currentVideoId) {
+      return false;
+    }
+    return true;
   } catch {
     return false;
   }
@@ -185,8 +195,8 @@ export function installYouTubeMainWorldInterceptor(): void {
       if (!player) return;
       if (detail?.enabled) {
         player.loadModule?.('captions');
-        const current = player.getOption?.('captions', 'track');
-        if (!current) {
+        const current = player.getOption?.('captions', 'track') as { languageCode?: string } | null | undefined;
+        if (!current?.languageCode) {
           let tracks = player.getOption?.('captions', 'tracklist') as Array<{ languageCode: string; kind?: string }>;
           if (!Array.isArray(tracks) || tracks.length === 0) {
             const resp = (player.getPlayerResponse?.() ||
