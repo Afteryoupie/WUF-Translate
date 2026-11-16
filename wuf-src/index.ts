@@ -19,6 +19,8 @@ export * from './subtitle/local-subtitle.ts';
 export * from './subtitle/decision-engine.ts';
 export * from './subtitle/subtitle-decisions.ts';
 export * from './subtitle/youtube-pipeline.ts';
+export * from './subtitle/subtitle-scheduler.ts';
+export * from './subtitle/subtitle-worker.ts';
 export * from './webpage/dom-translator.ts';
 export * from './webpage/local-webpage-translator.ts';
 export * from './webpage/wupage-settings.ts';

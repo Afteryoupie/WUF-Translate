@@ -3,6 +3,7 @@ import { sendWufRuntimeMessage } from '../lib/runtime-client.ts';
 import {
   areCaptionSegmentsEqual,
   chooseBestCaptionTrack,
+  createSubtitleWorker,
   findPrepaintSnapMs,
   getCurrentWatchVideoId,
   heuristicMergeAsr,
@@ -15,10 +16,16 @@ import {
   type CaptionTrackInfo,
   type MergedAsrSentence,
   type SplitCuePiece,
+  type SubtitleDiagnosticEvent,
+  type SubtitleSession,
+  type SubtitleWorkerEngine,
+  type WorkerResult,
+  type WorkerSentence,
 } from '../subtitle/youtube-pipeline.ts';
 
 export interface WufYouTubeDisplayCue extends SplitCuePiece {
   sourceText?: string;
+  sentenceId?: string;
 }
 
 export interface WufYouTubeNamespace {
@@ -29,6 +36,7 @@ export interface WufYouTubeNamespace {
     translatedWindows: Set<number>;
     translatingWindows?: Set<number>;
     sessionGen?: number;
+    diagnostics?: SubtitleDiagnosticEvent[];
   };
   chooseBestCaptionTrack: typeof chooseBestCaptionTrack;
   heuristicMergeAsr: typeof heuristicMergeAsr;
@@ -38,6 +46,8 @@ export interface WufYouTubeNamespace {
   translateYouTubeSubtitles: () => Promise<{ ok: boolean; active: boolean }>;
   translateWindowAt?: (currentTimeSec: number) => Promise<void>;
   planSubtitleWindowBatch?: typeof planSubtitleWindowBatch;
+  requestSubtitleWork?: () => void;
+  destroy?: () => void;
 }
 
 function isYouTubeWatchPage(): boolean {
@@ -250,39 +260,83 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
     translatedWindows: new Set<number>(),
     translatingWindows: new Set<number>(),
     translatedSentenceKeys: new Set<string>(),
-    sessionGen: 0,
+    sessionGen: 1,
     sourceLanguage: 'auto',
     targetLanguage: 'zh-TW',
     isAsr: false,
     videoId: getCurrentWatchVideoId(),
     cachedSubtitlesConfig: undefined as SettingsSnapshotPayload['runtimeSettings']['subtitles'] | undefined,
+    diagnostics: [] as SubtitleDiagnosticEvent[],
   };
 
-  const warmupSubtitleModel = async () => {
-    try {
-      await Promise.all([
-        sendWufRuntimeMessage({ type: 'wuf:warmup-youtube' }),
-        state.cachedSubtitlesConfig ? Promise.resolve() : syncSubtitlesSettings(),
-      ]);
-    } catch {
-      // Warmup failure must never break YouTube activation
+  let inFlightSettingsPromise: Promise<SettingsSnapshotPayload | null> | null = null;
+  let inFlightWarmupPromise: Promise<void> | null = null;
+  let boundConfigSignature: string | null = null;
+  let boundSessionGen = 0;
+  let settingsReadSeq = 0;
+  let settingsSynchronizing = false;
+  let disposed = false;
+
+  const computeConfigSignature = (snap: SettingsSnapshotPayload): string =>
+    JSON.stringify([snap.runtimeSettings.subtitles, snap.subtitleProvider]);
+
+  const applySettingsSnapshot = (snap: SettingsSnapshotPayload) => {
+    const sub = snap.runtimeSettings.subtitles;
+    state.cachedSubtitlesConfig = sub;
+    if (sub.targetLanguage) {
+      state.targetLanguage = sub.targetLanguage;
+    }
+    if (boundConfigSignature === null) {
+      boundConfigSignature = computeConfigSignature(snap);
     }
   };
 
-  const syncSubtitlesSettings = async () => {
-    try {
-      const snapResp = await sendWufRuntimeMessage<SettingsSnapshotPayload>({
-        type: 'wuf:get-settings',
-      });
-      if (snapResp.ok) {
-        const sub = snapResp.data.runtimeSettings.subtitles;
-        state.cachedSubtitlesConfig = sub;
-        if (sub.targetLanguage) {
-          state.targetLanguage = sub.targetLanguage;
+  const syncSubtitlesSettings = async (): Promise<SettingsSnapshotPayload | null> => {
+    if (inFlightSettingsPromise) return inFlightSettingsPromise;
+    const p = (async () => {
+      try {
+        const snapResp = await sendWufRuntimeMessage<SettingsSnapshotPayload>({
+          type: 'wuf:get-settings',
+        });
+        if (snapResp.ok) {
+          applySettingsSnapshot(snapResp.data);
+          return snapResp.data;
         }
+      } catch {
+        // Ignore settings read failures before initialization
       }
-    } catch {
-      // Ignore settings read failures before initialization
+      return null;
+    })();
+    inFlightSettingsPromise = p;
+    try {
+      return await p;
+    } finally {
+      if (inFlightSettingsPromise === p) {
+        inFlightSettingsPromise = null;
+      }
+    }
+  };
+
+  const warmupSubtitleModel = async () => {
+    if (inFlightWarmupPromise) return inFlightWarmupPromise;
+    const p = (async () => {
+      try {
+        const snap = state.cachedSubtitlesConfig ? null : await syncSubtitlesSettings();
+        const engine = state.cachedSubtitlesConfig?.engine ?? snap?.runtimeSettings.subtitles.engine;
+        if (engine === 'openai-compat-local') {
+          await sendWufRuntimeMessage({ type: 'wuf:warmup-youtube' });
+        }
+      } catch {
+        // Warmup failure must never break YouTube activation
+      }
+    })();
+    inFlightWarmupPromise = p;
+    try {
+      await p;
+    } finally {
+      if (inFlightWarmupPromise === p) {
+        inFlightWarmupPromise = null;
+      }
     }
   };
 
@@ -341,6 +395,26 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
   const STATUS_BADGE_ID = '__wuf_yt_caption_status';
   let captionStatusTimer: ReturnType<typeof setInterval> | null = null;
   let cueBoundaryTimer: ReturnType<typeof setTimeout> | null = null;
+  let waitingStatusTimer: ReturnType<typeof setTimeout> | null = null;
+  let waitingSentenceKey: string | null = null;
+  let waitingBadgeReady = false;
+  let sessionTerminalErrorText: string | null = null;
+  let currentWorkerSentences: WorkerSentence[] = [];
+  let activationAtMs: number | null = null;
+  let captionsReadyAtMs: number | null = null;
+  let seekAtMs: number | null = null;
+  let recordedFirstCueGen = 0;
+
+  const clearWaitingStatusTimer = (resetKey: boolean = true) => {
+    if (waitingStatusTimer !== null) {
+      clearTimeout(waitingStatusTimer);
+      waitingStatusTimer = null;
+    }
+    if (resetKey) {
+      waitingSentenceKey = null;
+      waitingBadgeReady = false;
+    }
+  };
 
   const clearCueBoundaryTimer = () => {
     if (cueBoundaryTimer !== null) {
@@ -385,9 +459,9 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
   const showCaptionStatus = (text: string = '翻譯中...') => {
     if (typeof document === 'undefined' || !state.active) return;
     const container =
-      document.querySelector<HTMLElement>('.ytp-caption-window-container') ||
       document.querySelector<HTMLElement>('#movie_player') ||
-      document.querySelector<HTMLElement>('.html5-video-player');
+      document.querySelector<HTMLElement>('.html5-video-player') ||
+      document.querySelector<HTMLElement>('.ytp-caption-window-container');
     if (!container) return;
 
     let statusEl = document.getElementById(STATUS_BADGE_ID) as HTMLElement | null;
@@ -541,6 +615,163 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
     captionObserver.observe(container, { childList: true, subtree: true, characterData: true });
   };
 
+  const getMonotonicNow = (): number => {
+    if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+      return performance.now();
+    }
+    return Date.now();
+  };
+
+  const pushDiagnostic = (event: SubtitleDiagnosticEvent) => {
+    state.diagnostics.push(event);
+    if (state.diagnostics.length > 200) {
+      state.diagnostics.splice(0, state.diagnostics.length - 200);
+    }
+  };
+
+  const buildWorkerSentences = (): WorkerSentence[] => {
+    if (
+      currentWorkerSentences.length === 0 ||
+      !Array.isArray(state.mergedSentences) ||
+      state.mergedSentencesSource !== state.rawSegments
+    ) {
+      state.mergedSentences = heuristicMergeAsr(state.rawSegments, state.sourceLanguage);
+      state.mergedSentencesSource = state.rawSegments;
+      currentWorkerSentences = state.mergedSentences.map((s, idx) => ({
+        ...s,
+        id: `s${idx}`,
+      }));
+    }
+    return currentWorkerSentences;
+  };
+
+  const findActiveSentenceAt = (nowMs: number): WorkerSentence | undefined => {
+    if (state.rawSegments.length === 0) return undefined;
+    const sentences = buildWorkerSentences();
+    let best: WorkerSentence | undefined;
+    for (let i = 0; i < sentences.length; i++) {
+      const s = sentences[i];
+      if (s.startMs <= nowMs && nowMs < s.endMs) {
+        if (!best || s.startMs > best.startMs) {
+          best = s;
+        }
+      }
+    }
+    return best;
+  };
+
+  const syncStatusBadgeForPlayback = (effectiveNowMs: number, hasTranslatedCue: boolean) => {
+    if (!state.active) {
+      clearWaitingStatusTimer();
+      hideCaptionStatus();
+      return;
+    }
+
+    if (sessionTerminalErrorText) {
+      clearWaitingStatusTimer();
+      showCaptionStatus(sessionTerminalErrorText);
+      return;
+    }
+
+    if (hasTranslatedCue) {
+      const nowPerf = getMonotonicNow();
+      const activeSent = findActiveSentenceAt(effectiveNowMs);
+      if (recordedFirstCueGen !== state.sessionGen) {
+        recordedFirstCueGen = state.sessionGen;
+        pushDiagnostic({
+          type: 'first-active-cue',
+          generation: state.sessionGen,
+          sentenceId: activeSent?.id ?? 'cue',
+          startMs: Math.round(effectiveNowMs),
+          attempt: 1,
+          ...(activationAtMs !== null
+            ? { activationToDisplayMs: Math.max(0, nowPerf - activationAtMs) }
+            : {}),
+          ...(captionsReadyAtMs !== null
+            ? { captionsToDisplayMs: Math.max(0, nowPerf - captionsReadyAtMs) }
+            : {}),
+        });
+      }
+      if (seekAtMs !== null) {
+        const seekElapsed = Math.max(0, nowPerf - seekAtMs);
+        seekAtMs = null;
+        pushDiagnostic({
+          type: 'seek-first-cue',
+          generation: state.sessionGen,
+          sentenceId: activeSent?.id ?? 'cue',
+          startMs: Math.round(effectiveNowMs),
+          attempt: 1,
+          elapsedMs: seekElapsed,
+        });
+      }
+      clearWaitingStatusTimer();
+      hideCaptionStatus();
+      return;
+    }
+
+    const activeSentence = findActiveSentenceAt(effectiveNowMs);
+    if (!activeSentence) {
+      clearWaitingStatusTimer();
+      hideCaptionStatus();
+      return;
+    }
+
+    const status = subtitleWorker.getSentenceStatus(activeSentence.id);
+    const isLegacyDone = state.translatedSentenceKeys.has(
+      `${activeSentence.startMs}:${activeSentence.text}`,
+    );
+    if (status === 'done' || isLegacyDone) {
+      // e.g. intentionalEmpty sentence: no displayCue, no waiting or failure badge
+      clearWaitingStatusTimer();
+      hideCaptionStatus();
+      return;
+    }
+
+    if (status === 'failed') {
+      clearWaitingStatusTimer();
+      showCaptionStatus('翻譯暫時失敗');
+      return;
+    }
+
+    const waitKey = `${state.sessionGen}:${activeSentence.id}`;
+    if (waitingSentenceKey !== waitKey) {
+      clearWaitingStatusTimer(false);
+      waitingSentenceKey = waitKey;
+      waitingBadgeReady = false;
+      hideCaptionStatus();
+      waitingStatusTimer = setTimeout(() => {
+        waitingStatusTimer = null;
+        if (!state.active || waitingSentenceKey !== waitKey) return;
+        waitingBadgeReady = true;
+        const video = getActiveVideo();
+        const currentMs = (video?.currentTime ?? effectiveNowMs / 1000) * 1000;
+        const currentSent = findActiveSentenceAt(currentMs);
+        if (!currentSent || `${state.sessionGen}:${currentSent.id}` !== waitKey) {
+          clearWaitingStatusTimer();
+          hideCaptionStatus();
+          return;
+        }
+        const st = subtitleWorker.getSentenceStatus(currentSent.id);
+        const legacyDoneNow = state.translatedSentenceKeys.has(
+          `${currentSent.startMs}:${currentSent.text}`,
+        );
+        if (st === 'done' || legacyDoneNow) {
+          clearWaitingStatusTimer();
+          hideCaptionStatus();
+          return;
+        }
+        if (st === 'failed') {
+          clearWaitingStatusTimer();
+          showCaptionStatus('翻譯暫時失敗');
+          return;
+        }
+        showCaptionStatus('翻譯中...');
+      }, 300);
+    } else if (waitingBadgeReady) {
+      showCaptionStatus('翻譯中...');
+    }
+  };
+
   const updateActiveCues = (nowSec: number) => {
     const overlay = ensureOverlayElement();
     if (overlay && typeof document !== 'undefined') {
@@ -556,7 +787,8 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
           }
         }
         renderYouTubeDisplayCue(player, overlay, state.displayCues, effectiveNowMs, state.active, captionScale);
-        if (player.classList.contains('wuf-translated-cue-visible')) hideCaptionStatus();
+        const hasTranslatedCue = player.classList.contains('wuf-translated-cue-visible');
+        syncStatusBadgeForPlayback(effectiveNowMs, hasTranslatedCue);
         overlay.updateAvoidance(!player.classList.contains('ytp-autohide'));
         scheduleCueBoundaryTimer(getActiveVideo(), effectiveNowMs);
       }
@@ -574,7 +806,7 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
       if (!state.active) return;
       const current = video.currentTime;
       updateActiveCues(current);
-      void triggerAheadOfTimeWorker(current);
+      requestSubtitleWork();
     };
 
     video.addEventListener('timeupdate', syncAndTrigger);
@@ -583,29 +815,50 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
     video.addEventListener('ratechange', () => {
       if (!state.active) return;
       updateActiveCues(video.currentTime);
+      requestSubtitleWork();
     });
     video.addEventListener('pause', () => {
       clearCueBoundaryTimer();
     });
     video.addEventListener('seeked', () => {
       if (!state.active) return;
+      seekAtMs = getMonotonicNow();
       const current = video.currentTime;
       updateActiveCues(current);
-      if (aheadOfTimeWorkerRunning && state.cachedSubtitlesConfig?.engine !== 'openai-compat-local') {
+      if (
+        aheadOfTimeWorkerRunning &&
+        state.cachedSubtitlesConfig?.engine !== 'openai-compat-local' &&
+        state.cachedSubtitlesConfig?.engine !== 'google-translate'
+      ) {
         const windowMs = Math.max(5, state.cachedSubtitlesConfig?.batchWindowSec || 30) * 1000;
         const seekWin = Math.floor((current * 1000) / windowMs);
         void translateWindowByIndex(seekWin, state.sessionGen, state.cachedSubtitlesConfig);
       }
-      void triggerAheadOfTimeWorker(current);
+      requestSubtitleWork();
     });
   };
 
-  const appendSentenceCues = (sentence: MergedAsrSentence, translation: string) => {
+  const appendSentenceCues = (sentence: MergedAsrSentence & { id?: string }, translation: string) => {
     const text = translation.replace(/\r?\n/g, ' ').trim();
     if (!text) return;
-    if (state.displayCues.some(c => c.startMs === sentence.startMs && c.sourceText === sentence.text)) return;
+    const sentenceId = typeof sentence.id === 'string' ? sentence.id : undefined;
+    if (
+      state.displayCues.some(c =>
+        sentenceId !== undefined && c.sentenceId !== undefined
+          ? c.sentenceId === sentenceId
+          : c.startMs === sentence.startMs && c.sourceText === sentence.text,
+      )
+    ) {
+      return;
+    }
     const pieces = splitLongSubtitleCue(sentence.startMs, sentence.endMs, text, sentence.sourceSegs.map(s => s.startMs));
-    state.displayCues.push(...pieces.map(piece => ({ ...piece, sourceText: sentence.text })));
+    state.displayCues.push(
+      ...pieces.map(piece => ({
+        ...piece,
+        sourceText: sentence.text,
+        ...(sentenceId !== undefined ? { sentenceId } : {}),
+      })),
+    );
     if (typeof document !== 'undefined') {
       const video = getActiveVideo();
       if (video) updateActiveCues(video.currentTime);
@@ -646,6 +899,10 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
     s.cachedSubtitlesConfig = sub;
     if (sub.targetLanguage) {
       s.targetLanguage = sub.targetLanguage;
+    }
+
+    if (sub?.engine === 'openai-compat-local' || sub?.engine === 'google-translate') {
+      return false;
     }
 
     const windowMs = Math.max(5, sub.batchWindowSec || 30) * 1000;
@@ -700,59 +957,32 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
     state.translatingWindows.add(windowIndex);
 
     try {
-      const isLocal = sub?.engine === 'openai-compat-local';
-
       const markTranslated = (sentence: MergedAsrSentence) => {
         const { startMs } = getBounds(sentence);
         s.translatedSentenceKeys!.add(`${startMs}:${sentence.text}`);
       };
 
-      if (isLocal) {
-        // Local translation models receive complete sentence groups sequentially.
-        for (const sentence of pendingSentences) {
-          if (!state.active || gen !== state.sessionGen) return false;
-          const response = await sendWufRuntimeMessage<TranslationResponse>({
-            type: 'wuf:translate-text',
-            request: {
-              texts: [sentence.text], targetLanguage: sub.targetLanguage,
-              sourceLanguage: state.sourceLanguage,
-              engine: sub.engine, purpose: 'subtitle',
-              modelOverride: sub.customModelOverride || undefined,
-            },
-          });
-          if (!state.active || gen !== state.sessionGen) return false;
-          if (!response.ok) return false;
-          if (response.data.intentionalEmpty?.includes(0)) {
-            markTranslated(sentence);
-            continue;
-          }
-          if (!response.data.translations[0]) return false;
+      const response = await sendWufRuntimeMessage<TranslationResponse>({
+        type: 'wuf:translate-text',
+        request: {
+          texts: pendingSentences.map(sentence => sentence.text), targetLanguage: sub.targetLanguage,
+          sourceLanguage: state.sourceLanguage,
+          engine: sub.engine, purpose: 'subtitle',
+          modelOverride: sub.customModelOverride || undefined,
+        },
+      });
+      if (!response.ok || !state.active || gen !== state.sessionGen) return false;
+      pendingSentences.forEach((sentence, index) => {
+        if (response.data.intentionalEmpty?.includes(index)) {
           markTranslated(sentence);
-          appendSentenceCues(sentence, response.data.translations[0]);
+          return;
         }
-      } else {
-        const response = await sendWufRuntimeMessage<TranslationResponse>({
-          type: 'wuf:translate-text',
-          request: {
-            texts: pendingSentences.map(sentence => sentence.text), targetLanguage: sub.targetLanguage,
-            sourceLanguage: state.sourceLanguage,
-            engine: sub.engine, purpose: 'subtitle',
-            modelOverride: sub.customModelOverride || undefined,
-          },
-        });
-        if (!response.ok || !state.active || gen !== state.sessionGen) return false;
-        pendingSentences.forEach((sentence, index) => {
-          if (response.data.intentionalEmpty?.includes(index)) {
-            markTranslated(sentence);
-            return;
-          }
-          const translation = response.data.translations[index];
-          if (translation) {
-            markTranslated(sentence);
-            appendSentenceCues(sentence, translation);
-          }
-        });
-      }
+        const translation = response.data.translations[index];
+        if (translation) {
+          markTranslated(sentence);
+          appendSentenceCues(sentence, translation);
+        }
+      });
       state.translatedWindows.add(windowIndex);
       return true;
     } finally {
@@ -772,10 +1002,10 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
         type: 'wuf:get-settings',
       });
       if (!snapResp.ok) return;
+      applySettingsSnapshot(snapResp.data);
       const sub = snapResp.data.runtimeSettings.subtitles;
-      state.cachedSubtitlesConfig = sub;
-      if (sub.targetLanguage) {
-        state.targetLanguage = sub.targetLanguage;
+      if (sub.engine === 'openai-compat-local' || sub.engine === 'google-translate') {
+        return;
       }
       const windowMs = Math.max(5, sub.batchWindowSec || 30) * 1000;
       const maxLookaheadWindows = 2; // Pre-buffer up to 60~90 seconds ahead
@@ -814,7 +1044,11 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
           break;
         }
 
-        if (!await translateWindowByIndex(candidateWin, myGen, sub)) break;
+        if (!await translateWindowByIndex(candidateWin, myGen, sub)) {
+          const nextWin = Math.floor(((getActiveVideo()?.currentTime ?? currentSec) * 1000) / windowMs);
+          if (state.active && myGen === state.sessionGen && nextWin !== currentWin) continue;
+          break;
+        }
         await new Promise(r => setTimeout(r, 50));
       }
     } finally {
@@ -822,13 +1056,179 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
     }
   };
 
+  const deferredResultsDuringSettingsSync: Array<{
+    sentence: WorkerSentence;
+    result: Extract<WorkerResult, { ok: true }>;
+    generation: number;
+  }> = [];
+
+  const handleWorkerResult = (
+    sentence: WorkerSentence,
+    result: Extract<WorkerResult, { ok: true }>,
+    generation: number,
+  ) => {
+    if (!state.active || generation !== state.sessionGen) return;
+    if (settingsSynchronizing) {
+      deferredResultsDuringSettingsSync.push({ sentence, result, generation });
+      return;
+    }
+    if (result.intentionalEmpty) {
+      const video = getActiveVideo();
+      if (video) updateActiveCues(video.currentTime);
+      return;
+    }
+    appendSentenceCues(sentence, result.translation);
+  };
+
+  const handleWorkerError = (
+    sentence: WorkerSentence,
+    error: Extract<WorkerResult, { ok: false }>['error'],
+    generation: number,
+  ) => {
+    if (!state.active || generation !== state.sessionGen || settingsSynchronizing) return;
+    if (error.status === 401 || error.status === 403 || error.code === 'CONFIG_ERROR') {
+      sessionTerminalErrorText = '請檢查翻譯連線與認證設定';
+      clearWaitingStatusTimer();
+      showCaptionStatus(sessionTerminalErrorText);
+      return;
+    }
+    if (
+      error.code === 'SEND_MESSAGE_FAILED' ||
+      error.code === 'RUNTIME_UNAVAILABLE' ||
+      error.code === 'INTERNAL_ERROR'
+    ) {
+      sessionTerminalErrorText = '翻譯暫時失敗';
+      clearWaitingStatusTimer();
+      showCaptionStatus(sessionTerminalErrorText);
+      return;
+    }
+    const status = subtitleWorker.getSentenceStatus(sentence.id);
+    if (status === 'failed') {
+      const video = getActiveVideo();
+      const nowMs = (video?.currentTime ?? 0) * 1000;
+      const activeSent = findActiveSentenceAt(nowMs);
+      if (activeSent && activeSent.id === sentence.id) {
+        clearWaitingStatusTimer();
+        showCaptionStatus('翻譯暫時失敗');
+      }
+    }
+  };
+
+  const handleWorkerDiagnostic = (event: SubtitleDiagnosticEvent) => {
+    pushDiagnostic(event);
+  };
+
+  const subtitleWorker = createSubtitleWorker({
+    getPlayback: () => {
+      const video = getActiveVideo();
+      const nowMs = Math.max(0, (video?.currentTime ?? 0) * 1000);
+      const playbackRate = video && video.playbackRate > 0 ? video.playbackRate : 1;
+      return { nowMs, playbackRate };
+    },
+    now: getMonotonicNow,
+    setTimer: (cb, delayMs) => setTimeout(cb, delayMs),
+    clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+    capacity: (engine) => {
+      if (settingsSynchronizing) return 0;
+      return engine === 'google-translate' ? 3 : 1;
+    },
+    translate: async (sentence, session): Promise<WorkerResult> => {
+      try {
+        const resp = await sendWufRuntimeMessage<TranslationResponse>({
+          type: 'wuf:translate-text',
+          request: {
+            texts: [sentence.text],
+            targetLanguage: session.targetLanguage || state.targetLanguage || 'zh-TW',
+            sourceLanguage: session.sourceLanguage || state.sourceLanguage || 'auto',
+            engine: session.engine,
+            purpose: 'subtitle',
+            modelOverride: session.modelOverride || undefined,
+          },
+        });
+        if (!resp.ok) {
+          return {
+            ok: false,
+            error: {
+              code: resp.error.code || 'INTERNAL_ERROR',
+              ...(resp.error.status !== undefined ? { status: resp.error.status } : {}),
+            },
+          };
+        }
+        const isIntentionalEmpty = Boolean(resp.data.intentionalEmpty?.includes(0));
+        const translation = String(resp.data.translations?.[0] ?? '');
+        if (!isIntentionalEmpty && !translation.trim()) {
+          return {
+            ok: false,
+            error: { code: 'INVALID_RESPONSE' },
+          };
+        }
+        return {
+          ok: true,
+          translation,
+          ...(isIntentionalEmpty ? { intentionalEmpty: true } : {}),
+        };
+      } catch {
+        return {
+          ok: false,
+          error: { code: 'INTERNAL_ERROR' },
+        };
+      }
+    },
+    onResult: handleWorkerResult,
+    onError: handleWorkerError,
+    onDiagnostic: handleWorkerDiagnostic,
+  });
+
+  const dispatchOrWakeForSub = (sub: SettingsSnapshotPayload['runtimeSettings']['subtitles'], gen: number) => {
+    if (!state.active || state.rawSegments.length === 0 || gen !== state.sessionGen || settingsSynchronizing) {
+      return;
+    }
+    if (sub.engine === 'openai-compat-local' || sub.engine === 'google-translate') {
+      if (boundSessionGen !== state.sessionGen) {
+        boundSessionGen = state.sessionGen;
+        const workerSentences = buildWorkerSentences();
+        const session: SubtitleSession = {
+          generation: state.sessionGen,
+          engine: sub.engine as SubtitleWorkerEngine,
+          sentences: workerSentences,
+          sourceLanguage: state.sourceLanguage,
+          targetLanguage: sub.targetLanguage || state.targetLanguage || 'zh-TW',
+          modelOverride: sub.customModelOverride || undefined,
+        };
+        subtitleWorker.replaceSession(session);
+      } else {
+        subtitleWorker.wake();
+      }
+    } else {
+      const video = getActiveVideo();
+      void triggerAheadOfTimeWorker(video?.currentTime ?? 0);
+    }
+  };
+
+  const requestSubtitleWork = (): void => {
+    if (disposed || !state.active || state.rawSegments.length === 0 || settingsSynchronizing) {
+      return;
+    }
+    const gen = state.sessionGen;
+    if (state.cachedSubtitlesConfig) {
+      dispatchOrWakeForSub(state.cachedSubtitlesConfig, gen);
+      return;
+    }
+    void syncSubtitlesSettings().then((snap) => {
+      if (!snap || !state.active || gen !== state.sessionGen || settingsSynchronizing) return;
+      dispatchOrWakeForSub(snap.runtimeSettings.subtitles, gen);
+    });
+  };
+
   const translateWindowAt = async (currentTimeSec: number) => {
     if (!state.active || state.rawSegments.length === 0) return;
-    const snapResp = await sendWufRuntimeMessage<SettingsSnapshotPayload>({
-      type: 'wuf:get-settings',
-    });
-    if (!snapResp.ok) return;
-    const sub = snapResp.data.runtimeSettings.subtitles;
+    const snap = await syncSubtitlesSettings();
+    const sub = snap?.runtimeSettings.subtitles ?? state.cachedSubtitlesConfig;
+    if (!sub) return;
+    if (sub.engine === 'openai-compat-local' || sub.engine === 'google-translate') {
+      requestSubtitleWork();
+      return;
+    }
     const windowMs = Math.max(5, sub.batchWindowSec || 30) * 1000;
     const currentWin = Math.floor(Math.max(0, currentTimeSec * 1000) / windowMs);
     await translateWindowByIndex(currentWin, state.sessionGen, sub);
@@ -837,7 +1237,15 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
 
   const disableYouTubeSubtitles = () => {
     state.active = false;
+    state.sessionGen++;
+    boundSessionGen = 0;
+    sessionTerminalErrorText = null;
+    activationAtMs = null;
+    seekAtMs = null;
+    deferredResultsDuringSettingsSync.length = 0;
+    subtitleWorker.stop();
     clearCueBoundaryTimer();
+    clearWaitingStatusTimer();
     toggleSubtitlesActiveClasses(false);
     ensureNativeCaptionsEnabled(false);
     hideCaptionStatus();
@@ -850,7 +1258,8 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
     if (state.active) {
       disableYouTubeSubtitles();
     } else {
-      showCaptionStatus('翻譯中...');
+      activationAtMs = getMonotonicNow();
+      sessionTerminalErrorText = null;
       void translateYouTubeSubtitles().then(() => {
         updatePlayerButtonState();
       });
@@ -862,12 +1271,21 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
     state.rawSegments = [];
     state.mergedSentences = [];
     state.mergedSentencesSource = null;
+    currentWorkerSentences = [];
     state.displayCues = [];
     state.translatedWindows.clear();
     state.translatingWindows.clear();
     state.translatedSentenceKeys.clear();
     state.sessionGen++;
+    boundSessionGen = 0;
+    sessionTerminalErrorText = null;
+    captionsReadyAtMs = null;
+    seekAtMs = null;
+    deferredResultsDuringSettingsSync.length = 0;
+    subtitleWorker.stop();
     clearCueBoundaryTimer();
+    clearWaitingStatusTimer();
+    hideCaptionStatus();
   };
 
   const forceSubtitleReload = () => {
@@ -892,6 +1310,37 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
     globalThis.window?.dispatchEvent(new CustomEvent('wuf-yt-request-tracks'));
   };
 
+  let storageChangeListener: ((changes: Record<string, unknown>, areaName: string) => void) | null = null;
+  let pollInterval: ReturnType<typeof setInterval> | null = null;
+
+  const destroy = () => {
+    if (disposed) return;
+    disposed = true;
+    state.active = false;
+    sessionTerminalErrorText = null;
+    deferredResultsDuringSettingsSync.length = 0;
+    subtitleWorker.dispose();
+    clearCueBoundaryTimer();
+    clearWaitingStatusTimer();
+    hideCaptionStatus();
+    if (captionObserver) {
+      captionObserver.disconnect();
+      captionObserver = null;
+    }
+    if (pollInterval !== null) {
+      clearInterval(pollInterval);
+      pollInterval = null;
+    }
+    if (
+      storageChangeListener &&
+      typeof globalThis.chrome !== 'undefined' &&
+      globalThis.chrome?.storage?.onChanged?.removeListener
+    ) {
+      globalThis.chrome.storage.onChanged.removeListener(storageChangeListener);
+      storageChangeListener = null;
+    }
+  };
+
   const translateYouTubeSubtitles = async () => {
     state.active = true;
     toggleSubtitlesActiveClasses(true);
@@ -902,18 +1351,33 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
     if (typeof document !== 'undefined') {
       globalThis.window?.dispatchEvent(new CustomEvent('wuf-yt-request-tracks'));
     }
-    showCaptionStatus('翻譯中...');
     ensureOverlayElement();
     bindVideoListeners();
     updatePlayerButtonState();
-    await warmupSubtitleModel();
 
     const video =
       typeof document !== 'undefined'
         ? document.querySelector<HTMLVideoElement>('video')
         : null;
     updateActiveCues(video?.currentTime ?? 0);
-    void triggerAheadOfTimeWorker(video?.currentTime ?? 0);
+    if (typeof requestSubtitleWork === 'function') {
+      requestSubtitleWork();
+    } else if (typeof triggerAheadOfTimeWorker === 'function') {
+      void triggerAheadOfTimeWorker(video?.currentTime ?? 0);
+    }
+
+    await warmupSubtitleModel();
+
+    if (state.active) {
+      const activeVideo =
+        typeof document !== 'undefined'
+          ? document.querySelector<HTMLVideoElement>('video')
+          : null;
+      updateActiveCues(activeVideo?.currentTime ?? 0);
+      if (typeof requestSubtitleWork === 'function') {
+        requestSubtitleWork();
+      }
+    }
     return { ok: true, active: state.active };
   };
 
@@ -927,6 +1391,8 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
     translateYouTubeSubtitles,
     translateWindowAt,
     planSubtitleWindowBatch,
+    requestSubtitleWork,
+    destroy,
   };
 
   if (typeof globalThis.window !== 'undefined') {
@@ -966,7 +1432,7 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
             if (state.active) {
               const video = getActiveVideo();
               updateActiveCues(video?.currentTime ?? 0);
-              void triggerAheadOfTimeWorker(video?.currentTime ?? 0);
+              requestSubtitleWork();
             }
             return;
           }
@@ -975,11 +1441,12 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
           state.sourceLanguage = nextSourceLang;
           state.isAsr = nextIsAsr;
           state.rawSegments = segments;
+          captionsReadyAtMs = getMonotonicNow();
           const video = getActiveVideo();
-          updateActiveCues(video?.currentTime ?? 0);
           if (state.active) {
-            void triggerAheadOfTimeWorker(video?.currentTime ?? 0);
+            requestSubtitleWork();
           }
+          updateActiveCues(video?.currentTime ?? 0);
         }
       }
     });
@@ -1015,6 +1482,96 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
   if (isYouTubeWatchPage()) {
     void warmupSubtitleModel();
     void syncSubtitlesSettings();
+  }
+
+  if (typeof globalThis.chrome !== 'undefined' && globalThis.chrome?.storage?.onChanged?.addListener) {
+    storageChangeListener = (changes: Record<string, unknown>, areaName: string) => {
+      if (disposed) return;
+      const isSettingsEvent =
+        (areaName === 'sync' && Object.prototype.hasOwnProperty.call(changes, 'wufSettings')) ||
+        (areaName === 'local' && Object.prototype.hasOwnProperty.call(changes, 'wufSecrets'));
+      if (!isSettingsEvent) return;
+
+      settingsReadSeq += 1;
+      const mySeq = settingsReadSeq;
+      const videoIdAtStart = state.videoId;
+      const genAtStart = state.sessionGen;
+      settingsSynchronizing = true;
+
+      void (async () => {
+        try {
+          const snapResp = await sendWufRuntimeMessage<SettingsSnapshotPayload>({
+            type: 'wuf:get-settings',
+          });
+          if (disposed || mySeq !== settingsReadSeq) return;
+
+          if (!snapResp.ok) {
+            settingsSynchronizing = false;
+            deferredResultsDuringSettingsSync.length = 0;
+            boundSessionGen = 0;
+            subtitleWorker.stop();
+            if (state.active) {
+              showCaptionStatus('翻譯暫時失敗');
+            }
+            return;
+          }
+
+          const nextSig = computeConfigSignature(snapResp.data);
+          const prevSig = boundConfigSignature;
+          state.cachedSubtitlesConfig = snapResp.data.runtimeSettings.subtitles;
+          if (snapResp.data.runtimeSettings.subtitles.targetLanguage) {
+            state.targetLanguage = snapResp.data.runtimeSettings.subtitles.targetLanguage;
+          }
+          boundConfigSignature = nextSig;
+
+          if (!state.active || state.videoId !== videoIdAtStart) {
+            settingsSynchronizing = false;
+            deferredResultsDuringSettingsSync.length = 0;
+            if (!state.active) {
+              boundSessionGen = 0;
+              subtitleWorker.stop();
+            }
+            return;
+          }
+
+          if (prevSig !== null && nextSig === prevSig && state.sessionGen === genAtStart) {
+            settingsSynchronizing = false;
+            const pendingResults = deferredResultsDuringSettingsSync.splice(0);
+            for (const item of pendingResults) {
+              handleWorkerResult(item.sentence, item.result, item.generation);
+            }
+            requestSubtitleWork();
+            return;
+          }
+
+          // Subtitle-relevant configuration changed -> invalidate old cues and start a larger generation
+          settingsSynchronizing = false;
+          sessionTerminalErrorText = null;
+          deferredResultsDuringSettingsSync.length = 0;
+          state.displayCues = [];
+          state.translatedWindows.clear();
+          state.translatingWindows.clear();
+          state.translatedSentenceKeys.clear();
+          state.sessionGen += 1;
+          boundSessionGen = 0;
+          subtitleWorker.stop();
+          clearWaitingStatusTimer();
+          const video = getActiveVideo();
+          requestSubtitleWork();
+          updateActiveCues(video?.currentTime ?? 0);
+        } catch {
+          if (disposed || mySeq !== settingsReadSeq) return;
+          settingsSynchronizing = false;
+          deferredResultsDuringSettingsSync.length = 0;
+          boundSessionGen = 0;
+          subtitleWorker.stop();
+          if (state.active) {
+            showCaptionStatus('翻譯暫時失敗');
+          }
+        }
+      })();
+    };
+    globalThis.chrome.storage.onChanged.addListener(storageChangeListener);
   }
 
   if (typeof globalThis.chrome !== 'undefined' && globalThis.chrome?.runtime?.onMessage) {
@@ -1214,7 +1771,6 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
         toggleSubtitlesActiveClasses(state.active);
         if (state.active && nextVideoId) {
           ensureNativeCaptionsEnabled(true);
-          showCaptionStatus('翻譯中...');
           globalThis.window?.dispatchEvent(new CustomEvent('wuf-yt-request-tracks'));
         }
         if (isYouTubeWatchPage()) {
@@ -1232,14 +1788,15 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
 
     // Initial polling guarantee for dynamic player controls mount
     let pollCount = 0;
-    const pollInterval = setInterval(() => {
+    pollInterval = setInterval(() => {
       pollCount++;
       if (document.querySelector('.ytp-right-controls')) {
         injectPlayerButton();
         bindVideoListeners();
       }
-      if (pollCount > 15) {
+      if (pollCount > 15 && pollInterval !== null) {
         clearInterval(pollInterval);
+        pollInterval = null;
       }
     }, 500);
 

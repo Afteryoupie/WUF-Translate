@@ -279,7 +279,7 @@ export function heuristicMergeAsr(
     }
 
     if (shouldBreak) {
-      flush(seg.startMs);
+      flush(isLongSilence ? undefined : seg.startMs);
     }
     currentSegs.push(seg);
     currentWords += segWords;
@@ -788,3 +788,6 @@ export function findPrepaintSnapMs(
   }
   return Number.isFinite(nearestStart) ? nearestStart : null;
 }
+
+export * from './subtitle-scheduler.ts';
+export * from './subtitle-worker.ts';

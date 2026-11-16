@@ -72,7 +72,7 @@ test('Edge loads the complete extension: WuPage engine through real content/back
       response.end(JSON.stringify({ choices: [{ message: { content: structured ? JSON.stringify(output) : output.join('\n---WUF-SEG---\n') } }] })); return;
     }
     response.setHeader('Content-Type', 'text/html; charset=utf-8');
-    if (request.url?.startsWith('/watch')) response.end('<!doctype html><meta charset="utf-8"><ytd-watch-flexy><div id="primary"><ytd-watch-metadata><h1><yt-formatted-string>Fixture video title</yt-formatted-string></h1></ytd-watch-metadata><ytd-comment-renderer><yt-attributed-string id="content-text"><span>Legacy comment body.</span></yt-attributed-string></ytd-comment-renderer><ytd-comment-view-model><yt-attributed-string id="content-text"><span>Current comment body.</span></yt-attributed-string></ytd-comment-view-model></div></ytd-watch-flexy>');
+    if (request.url?.startsWith('/watch')) response.end('<!doctype html><meta charset="utf-8"><div id="movie_player" class="html5-video-player"><video></video><div id="ytp-caption-window-container" class="ytp-caption-window-container"></div><div class="ytp-right-controls"><button class="ytp-subtitles-button" aria-pressed="true"></button></div></div><ytd-watch-flexy><div id="primary"><ytd-watch-metadata><h1><yt-formatted-string>Fixture video title</yt-formatted-string></h1></ytd-watch-metadata><ytd-comment-renderer><yt-attributed-string id="content-text"><span>Legacy comment body.</span></yt-attributed-string></ytd-comment-renderer><ytd-comment-view-model><yt-attributed-string id="content-text"><span>Current comment body.</span></yt-attributed-string></ytd-comment-view-model></div></ytd-watch-flexy>');
     else if (request.url === '/empty') response.end('<!doctype html><meta charset="utf-8"><main></main>');
     else if (request.url === '/frame') response.end('<!doctype html><meta charset="utf-8"><main><p>Embedded frame paragraph.</p></main>');
     else if (request.url === '/hidden-frame') response.end('<!doctype html><meta charset="utf-8"><main><p>Previously hidden iframe paragraph.</p></main>');
@@ -463,6 +463,135 @@ test('Edge loads the complete extension: WuPage engine through real content/back
       ]);
       assert.equal(restored.origLiText, 'What it is');
       t.diagnostic('Real extension: bilingual + monolingual link preservation, fallback marker repair, cache hit, click navigation, and DOM restore passed.');
+
+      // Verify YouTube subtitle scheduler & worker in real Edge browser:
+      // normal playback, dense dialogue, 1x/2x playbackRate, forward/backward/paused seek, SPA video switch,
+      // peak concurrency === 1 for local, 0 expired sentence requests, and offline->recovery/exhaustion lifecycle.
+      settings.subtitles.engine = 'openai-compat-local';
+      settings.subtitles.targetLanguage = 'zh-TW';
+      await saveSettings();
+      await evaluate(worker, `chrome.runtime.sendMessage({type:'wuf:clear-cache'}).catch(()=>{})`);
+
+      await page.send('Page.navigate', { url: youtubeUrl });
+      await until(() => evaluate(page, `location.hostname === 'www.youtube.com' && document.readyState === 'complete' && !!document.querySelector('video')`), 'YouTube subtitle fixture load');
+      await until(async () => { try { return (await message({ type: 'wuf:get-youtube-state' }))?.ok; } catch { return false; } }, 'YouTube subtitle content script ready');
+      localRequests.length = 0;
+      maxInFlightLocal = 0;
+
+      // Attach a 120s 8kHz silent WAV stream to <video> so native C++ currentTime/playbackRate work across MAIN and ISOLATED worlds
+      await evaluate(page, `new Promise((resolve, reject) => {
+        const sampleRate = 8000;
+        const seconds = 120;
+        const numSamples = sampleRate * seconds;
+        const buf = new ArrayBuffer(44 + numSamples);
+        const view = new DataView(buf);
+        const writeStr = (off, s) => { for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i)); };
+        writeStr(0, 'RIFF');
+        view.setUint32(4, 36 + numSamples, true);
+        writeStr(8, 'WAVEfmt ');
+        view.setUint32(16, 16, true);
+        view.setUint16(20, 1, true);
+        view.setUint16(22, 1, true);
+        view.setUint32(24, sampleRate, true);
+        view.setUint32(28, sampleRate, true);
+        view.setUint16(32, 1, true);
+        view.setUint16(34, 8, true);
+        writeStr(36, 'data');
+        view.setUint32(40, numSamples, true);
+        new Uint8Array(buf, 44).fill(128);
+        const v = document.querySelector('video');
+        v.addEventListener('loadedmetadata', () => {
+          v.pause();
+          v.currentTime = 25;
+          resolve(true);
+        }, { once: true });
+        v.addEventListener('error', () => reject(new Error('video load error')), { once: true });
+        v.src = URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+      })`);
+      assert.equal((await message({ type: 'wuf:activate-youtube-subtitles' }))?.ok, true);
+      await evaluate(page, `(() => {
+        window.dispatchEvent(new CustomEvent('wuf-timedtext-captured', {
+          detail: {
+            url: 'https://www.youtube.com/api/timedtext?v=wuf-fixture&lang=en&kind=asr',
+            rawText: JSON.stringify({
+              events: [
+                { tStartMs: 0, dDurationMs: 2000, segs: [{ utf8: 'Expired zero.' }] },
+                { tStartMs: 5000, dDurationMs: 2000, segs: [{ utf8: 'Expired five.' }] },
+                { tStartMs: 25000, dDurationMs: 2500, segs: [{ utf8: 'Active twenty five.' }] },
+                { tStartMs: 28000, dDurationMs: 2500, segs: [{ utf8: 'Dense twenty eight.' }] },
+                { tStartMs: 65000, dDurationMs: 2500, segs: [{ utf8: 'Rate2x sixty five.' }] },
+                { tStartMs: 95000, dDurationMs: 2500, segs: [{ utf8: 'Seek ninety five.' }] },
+              ],
+            }),
+          },
+        }));
+      })()`);
+
+      await until(() => localRequests.some(r => r.usr.includes('Active twenty five.')) && localRequests.some(r => r.usr.includes('Dense twenty eight.')), 'active 25s and dense 28s subtitles requested');
+      await until(() => evaluate(page, `document.querySelector('#movie_player')?.classList.contains('wuf-translated-cue-visible')`), 'active 25s cue rendered on overlay');
+      assert.equal(localRequests.some(r => r.usr.includes('Expired zero') || r.usr.includes('Expired five')), false, 'Expired sentences must never be requested');
+      assert.equal(maxInFlightLocal, 1, 'Local subtitle concurrency peak must be 1');
+      assert.ok(localRequests[0].usr.includes('Active twenty five.'), 'Active sentence at 25s must be requested first');
+
+      // 1x vs 2x playbackRate: at t=25s, 65s is 40s ahead (outside 1x 30s buffer, inside 2x 60s buffer)
+      assert.equal(localRequests.some(r => r.usr.includes('Rate2x sixty five.')), false, 'At 1x rate, +40s sentence is outside 30s lookahead');
+      await evaluate(page, `(() => {
+        const v = document.querySelector('video');
+        v.playbackRate = 2;
+      })()`);
+      await until(() => localRequests.some(r => r.usr.includes('Rate2x sixty five.')), '2x rate expands lookahead to 60s and translates 65s sentence');
+
+      // Paused seek forward to 95s, then backward to 5s
+      await evaluate(page, `(() => {
+        const v = document.querySelector('video');
+        v.playbackRate = 1;
+        v.currentTime = 96;
+      })()`);
+      await until(() => localRequests.some(r => r.usr.includes('Seek ninety five.')), 'Paused seek to 95s translates target');
+
+      await evaluate(page, `(() => {
+        const v = document.querySelector('video');
+        v.currentTime = 5.5;
+      })()`);
+      await until(() => localRequests.some(r => r.usr.includes('Expired five.')), 'Backward seek to 5.5s translates previously expired 5s sentence');
+      assert.equal(maxInFlightLocal, 1, 'Local subtitle concurrency peak remains 1 across seeks and rate changes');
+
+      // SPA video switch (yt-navigate-finish to ?v=second-video) resets buffers and translates new video
+      await evaluate(page, `(() => {
+        history.pushState({}, '', '/watch?v=second-video');
+        window.dispatchEvent(new CustomEvent('yt-navigate-finish'));
+        const v = document.querySelector('video');
+        v.currentTime = 1;
+        window.dispatchEvent(new CustomEvent('wuf-timedtext-captured', {
+          detail: {
+            url: 'https://www.youtube.com/api/timedtext?v=second-video&lang=en&kind=asr',
+            rawText: JSON.stringify({
+              events: [{ tStartMs: 500, dDurationMs: 2500, segs: [{ utf8: 'Second video line.' }] }],
+            }),
+          },
+        }));
+      })()`);
+      await until(() => localRequests.some(r => r.usr.includes('Second video line.')), 'SPA video switch translates new video caption');
+
+      // Service disconnect -> retry recovery when candidate has remaining attempts
+      await evaluate(page, `(() => {
+        history.pushState({}, '', '/watch?v=third-video');
+        window.dispatchEvent(new CustomEvent('yt-navigate-finish'));
+        const v = document.querySelector('video');
+        v.currentTime = 1;
+        window.dispatchEvent(new CustomEvent('wuf-timedtext-captured', {
+          detail: {
+            url: 'https://www.youtube.com/api/timedtext?v=third-video&lang=en&kind=asr',
+            rawText: JSON.stringify({
+              events: [{ tStartMs: 500, dDurationMs: 3500, segs: [{ utf8: 'Fail this single local paragraph once then recover.' }] }],
+            }),
+          },
+        }));
+      })()`);
+      await until(() => localRequests.some(r => r.usr.includes('Fail this single local paragraph once')), 'initial request fails while service returns 500');
+      // After 3 attempts fail on 'Fail this single local paragraph...', status badge shows '翻譯暫時失敗'
+      await until(() => evaluate(page, `document.getElementById('__wuf_yt_caption_status')?.textContent === '翻譯暫時失敗'`), 'exhausted retries show terminal failure badge', 8000);
+      t.diagnostic('Real extension: YouTube subtitle scheduling (1x/2x rate, forward/backward/paused seek, SPA video switch, retry exhaustion badge, 0 expired requests, peak=1) passed.');
     } finally {
       localServer.closeAllConnections();
       localServer.close();

@@ -4,7 +4,7 @@ WUF Translate 是 Chrome／Edge 的瀏覽器擴充功能，幫你把外文網頁
 
 不需要先學會 LLM 的原理。第一次先選一種翻譯方式，確認能看到譯文，再進階調整模型或 Prompt。**一般使用者取得已建置的擴充功能套件後，不需要安裝 Node.js、Python 或編譯工具。**
 
-> **目前安裝狀態（v0.2.2）：已於 [Releases 發布頁](https://github.com/Afteryoupie/WUF-Translate/releases/latest) 提供已建置擴充功能套件 **`WUF-Translate-v0.2.2.zip`**。**
+> **目前安裝狀態（v0.3.0）：已於 [Releases 發布頁](https://github.com/Afteryoupie/WUF-Translate/releases/latest) 提供已建置擴充功能套件 **`WUF-Translate-v0.3.0.zip`**。**
 > GitHub 的 **Code → Download ZIP** 與 **Source code ZIP** 都是原始碼，不能直接載入瀏覽器；請改下載 Releases 附件中的擴充功能 ZIP。
 >
 > 維護者或自行修改原始碼的人，請依[開發者建置文件](docs/BUILD.md)製作套件；Node.js 是製作套件的工具，不是一般使用者的日常使用需求。
@@ -56,7 +56,7 @@ API 可以理解成「讓擴充功能請服務幫忙翻譯的入口」，API 金
 
 以下適用於下載[已建置套件](https://github.com/Afteryoupie/WUF-Translate/releases/latest)的使用者；自行建置的人請先完成[建置文件](docs/BUILD.md)，再載入產出的 `dist/wuf`。
 
-1. 從 [Releases](https://github.com/Afteryoupie/WUF-Translate/releases/latest) 下載 **`WUF-Translate-v0.2.2.zip`**（或最新版本的擴充功能 ZIP），解壓縮到固定位置。不要將 Source code ZIP 當成安裝包。
+1. 從 [Releases](https://github.com/Afteryoupie/WUF-Translate/releases/latest) 下載 **`WUF-Translate-v0.3.0.zip`**（或最新版本的擴充功能 ZIP），解壓縮到固定位置。不要將 Source code ZIP 當成安裝包。
 2. 找到解壓縮後直接包含 **`manifest.json`** 的資料夾。若看見的是 `package.json`、`wuf-src`，那是原始碼目錄，還不是可載入的擴充功能。
 3. 開啟 Chrome，在網址列輸入 `chrome://extensions`；Edge 則輸入 `edge://extensions`。
 4. 開啟「開發人員模式」，按「載入未封裝項目」或「載入解壓縮」，選擇第 2 步的資料夾。
@@ -137,14 +137,14 @@ API 可以理解成「讓擴充功能請服務幫忙翻譯的入口」，API 金
 4. 重新整理影片分頁並播放，讓 WUF 取得字幕資料；先暫停影片，等第一批翻譯完成。
 5. 看到影片上的雙語字幕後再繼續播放；可在 WUF 面板調整字幕大小。
 
-第一批字幕可能需要等待模型喚醒與翻譯。電腦能載入模型，不代表一定能跟上影片速度；來源字幕的辨識錯誤也會影響譯文。
+第一批字幕可能需要等待模型喚醒與翻譯。本機模型與 Google 翻譯會優先處理目前播放時間的句子並逐句顯示，跳轉時間軸後也會自動改從新位置開始翻譯，無需等待過期片段完成。電腦能載入模型，不代表一定能跟上影片速度；來源字幕的辨識錯誤也會影響譯文。
 
 ## 日常使用與本機休眠
 
 - **自動翻譯指定網站**：將目前網站加入自動翻譯清單。
 - **跨分頁延續翻譯**：在其他分頁延續網頁翻譯狀態。
 - **簡繁自動互轉（OpenCC）**：轉換字幕與 YouTube 留言的中文字形及部分用詞，不負責把英文翻成中文；一般網頁不套用。
-- **字幕分批參數**：預設一次準備 30 秒字幕，在快用完前 10 秒準備下一批；先維持預設，批次更大不代表更快。
+- **字幕預先緩衝與分批**：本機模型（單路）與 Google 翻譯（最多 3 路並行）依播放進度與倍速預先準備前方約 30 秒實際播放時間的字幕；線上自訂與 Microsoft 翻譯則預設一次準備 30 秒視窗並在剩餘 10 秒時預先準備下一視窗。先維持預設，批次更大不代表更快。
 
 Watchdog 預設閒置約 3 分鐘會讓模型休眠，服務仍在時可由下一筆請求重新載入。若整個 Watchdog 已退出，要先手動開啟程式，或事先依 [Watchdog 指南](https://github.com/Afteryoupie/WUF-Watchdog#readme)註冊 Native Host（瀏覽器連接功能），才能從瀏覽器喚醒。**註冊連接功能與設定登入自動啟動是兩回事。**
 
@@ -154,7 +154,7 @@ Watchdog 預設閒置約 3 分鐘會讓模型休眠，服務仍在時可由下�
 
 | 情況 | 處理方式 |
 | --- | --- |
-| Releases 沒有安裝附件 | 請確認已切換至最新 Release 並展開 **Assets** 下載 `WUF-Translate-v0.2.2.zip`；Source code ZIP 不能直接載入。自行建置請見[建置文件](docs/BUILD.md) |
+| Releases 沒有安裝附件 | 請確認已切換至最新 Release 並展開 **Assets** 下載 `WUF-Translate-v0.3.0.zip`；Source code ZIP 不能直接載入。自行建置請見[建置文件](docs/BUILD.md) |
 | 載入時找不到 manifest | 先解壓縮套件，選直接包含 `manifest.json` 的資料夾；自行建置者選 `dist/wuf` |
 | 沒安裝 Watchdog，畫面一直顯示本機離線 | 將網頁與 YouTube 引擎分別改成 Google 翻譯 |
 | Watchdog 控制台開不了 | 先手動啟動 Watchdog；依其指南處理安裝、系統條件與程式路徑，不必先重裝擴充功能 |
