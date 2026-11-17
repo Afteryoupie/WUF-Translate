@@ -385,7 +385,7 @@ export function createSubtitleWorker(deps: SubtitleWorkerDeps): SubtitleWorker {
         }
 
         // Sentence-level retry state transition BEFORE calling onError
-        if (error.code === 'ABORTED') {
+        if (error.code === 'ABORTED' || error.code === 'CONTENT_REJECTED') {
           currentState.status = 'failed';
           currentState.retryAtMs = 0;
         } else if (error.code === 'TIMEOUT' && session.engine === 'openai-compat-local') {

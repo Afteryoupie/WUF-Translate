@@ -1056,11 +1056,7 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
     }
   };
 
-  const deferredResultsDuringSettingsSync: Array<{
-    sentence: WorkerSentence;
-    result: Extract<WorkerResult, { ok: true }>;
-    generation: number;
-  }> = [];
+  const deferredWorkerCallbacks: Array<() => void> = [];
 
   const handleWorkerResult = (
     sentence: WorkerSentence,
@@ -1069,7 +1065,7 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
   ) => {
     if (!state.active || generation !== state.sessionGen) return;
     if (settingsSynchronizing) {
-      deferredResultsDuringSettingsSync.push({ sentence, result, generation });
+      deferredWorkerCallbacks.push(() => handleWorkerResult(sentence, result, generation));
       return;
     }
     if (result.intentionalEmpty) {
@@ -1085,7 +1081,11 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
     error: Extract<WorkerResult, { ok: false }>['error'],
     generation: number,
   ) => {
-    if (!state.active || generation !== state.sessionGen || settingsSynchronizing) return;
+    if (!state.active || generation !== state.sessionGen) return;
+    if (settingsSynchronizing) {
+      deferredWorkerCallbacks.push(() => handleWorkerError(sentence, error, generation));
+      return;
+    }
     if (error.status === 401 || error.status === 403 || error.code === 'CONFIG_ERROR') {
       sessionTerminalErrorText = '請檢查翻譯連線與認證設定';
       clearWaitingStatusTimer();
@@ -1104,13 +1104,9 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
     }
     const status = subtitleWorker.getSentenceStatus(sentence.id);
     if (status === 'failed') {
-      const video = getActiveVideo();
-      const nowMs = (video?.currentTime ?? 0) * 1000;
-      const activeSent = findActiveSentenceAt(nowMs);
-      if (activeSent && activeSent.id === sentence.id) {
-        clearWaitingStatusTimer();
-        showCaptionStatus('翻譯暫時失敗');
-      }
+      // Keep the dialogue readable without sending local subtitles to another
+      // provider. This is a session-only display cue, never a cached translation.
+      appendSentenceCues(sentence, sentence.text);
     }
   };
 
@@ -1242,7 +1238,7 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
     sessionTerminalErrorText = null;
     activationAtMs = null;
     seekAtMs = null;
-    deferredResultsDuringSettingsSync.length = 0;
+    deferredWorkerCallbacks.length = 0;
     subtitleWorker.stop();
     clearCueBoundaryTimer();
     clearWaitingStatusTimer();
@@ -1281,7 +1277,7 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
     sessionTerminalErrorText = null;
     captionsReadyAtMs = null;
     seekAtMs = null;
-    deferredResultsDuringSettingsSync.length = 0;
+    deferredWorkerCallbacks.length = 0;
     subtitleWorker.stop();
     clearCueBoundaryTimer();
     clearWaitingStatusTimer();
@@ -1318,7 +1314,7 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
     disposed = true;
     state.active = false;
     sessionTerminalErrorText = null;
-    deferredResultsDuringSettingsSync.length = 0;
+    deferredWorkerCallbacks.length = 0;
     subtitleWorker.dispose();
     clearCueBoundaryTimer();
     clearWaitingStatusTimer();
@@ -1507,7 +1503,7 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
 
           if (!snapResp.ok) {
             settingsSynchronizing = false;
-            deferredResultsDuringSettingsSync.length = 0;
+            deferredWorkerCallbacks.length = 0;
             boundSessionGen = 0;
             subtitleWorker.stop();
             if (state.active) {
@@ -1526,7 +1522,7 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
 
           if (!state.active || state.videoId !== videoIdAtStart) {
             settingsSynchronizing = false;
-            deferredResultsDuringSettingsSync.length = 0;
+            deferredWorkerCallbacks.length = 0;
             if (!state.active) {
               boundSessionGen = 0;
               subtitleWorker.stop();
@@ -1536,10 +1532,7 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
 
           if (prevSig !== null && nextSig === prevSig && state.sessionGen === genAtStart) {
             settingsSynchronizing = false;
-            const pendingResults = deferredResultsDuringSettingsSync.splice(0);
-            for (const item of pendingResults) {
-              handleWorkerResult(item.sentence, item.result, item.generation);
-            }
+            for (const callback of deferredWorkerCallbacks.splice(0)) callback();
             requestSubtitleWork();
             return;
           }
@@ -1547,7 +1540,7 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
           // Subtitle-relevant configuration changed -> invalidate old cues and start a larger generation
           settingsSynchronizing = false;
           sessionTerminalErrorText = null;
-          deferredResultsDuringSettingsSync.length = 0;
+          deferredWorkerCallbacks.length = 0;
           state.displayCues = [];
           state.translatedWindows.clear();
           state.translatingWindows.clear();
@@ -1562,7 +1555,7 @@ export function initYouTubeContentScript(): WufYouTubeNamespace {
         } catch {
           if (disposed || mySeq !== settingsReadSeq) return;
           settingsSynchronizing = false;
-          deferredResultsDuringSettingsSync.length = 0;
+          deferredWorkerCallbacks.length = 0;
           boundSessionGen = 0;
           subtitleWorker.stop();
           if (state.active) {

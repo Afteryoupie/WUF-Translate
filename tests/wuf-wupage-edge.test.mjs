@@ -298,6 +298,12 @@ test('Edge loads the complete extension: WuPage engine through real content/back
           const usr = String(body.messages.at(-1).content);
           localRequests.push({ usr, stream: body.stream, sys: String(body.messages[0].content) });
           await sleep(25);
+          if (usr.includes('Refused dialogue.')) {
+            response.writeHead(500, { 'Content-Type': 'application/json' }).end(
+              JSON.stringify({ error: { message: "The model's safety guardrails were triggered." } }),
+            );
+            return;
+          }
           if (usr.includes('Fail this single local paragraph')) {
             response.writeHead(500, { 'Content-Type': 'text/plain' }).end('single item error');
             return;
@@ -583,15 +589,25 @@ test('Edge loads the complete extension: WuPage engine through real content/back
           detail: {
             url: 'https://www.youtube.com/api/timedtext?v=third-video&lang=en&kind=asr',
             rawText: JSON.stringify({
-              events: [{ tStartMs: 500, dDurationMs: 3500, segs: [{ utf8: 'Fail this single local paragraph once then recover.' }] }],
+              events: [
+                { tStartMs: 500, dDurationMs: 3500, segs: [{ utf8: 'Fail this single local paragraph once then recover.' }] },
+                { tStartMs: 5000, dDurationMs: 2500, segs: [{ utf8: 'Refused dialogue.' }] },
+                { tStartMs: 10000, dDurationMs: 2500, segs: [{ utf8: 'Read more.' }] },
+              ],
             }),
           },
         }));
       })()`);
       await until(() => localRequests.some(r => r.usr.includes('Fail this single local paragraph once')), 'initial request fails while service returns 500');
-      // After 3 attempts fail on 'Fail this single local paragraph...', status badge shows '翻譯暫時失敗'
-      await until(() => evaluate(page, `document.getElementById('__wuf_yt_caption_status')?.textContent === '翻譯暫時失敗'`), 'exhausted retries show terminal failure badge', 8000);
-      t.diagnostic('Real extension: YouTube subtitle scheduling (1x/2x rate, forward/backward/paused seek, SPA video switch, retry exhaustion badge, 0 expired requests, peak=1) passed.');
+      // Exhausted retries retain source dialogue instead of replacing it with an error.
+      await until(() => evaluate(page, `document.querySelector('wuf-subtitle-overlay')?.shadowRoot?.querySelector('.wuf-caption-segment')?.textContent?.includes('Fail this single')`), 'exhausted retries show source dialogue', 8000);
+      assert.notEqual(await evaluate(page, `document.getElementById('__wuf_yt_caption_status')?.textContent`), '翻譯暫時失敗');
+      await evaluate(page, `document.querySelector('video').currentTime = 5.5`);
+      await until(() => evaluate(page, `document.querySelector('wuf-subtitle-overlay')?.shadowRoot?.textContent?.includes('Refused dialogue.')`), 'rejected subtitle shows source dialogue');
+      await evaluate(page, `document.querySelector('video').currentTime = 10.5`);
+      await until(() => evaluate(page, `document.querySelector('wuf-subtitle-overlay')?.shadowRoot?.textContent?.includes('閱讀更多')`), 'following subtitle shows translated dialogue');
+      assert.equal(localRequests.filter(r => r.usr.includes('Refused dialogue.')).length, 1);
+      t.diagnostic('Real extension: YouTube subtitle scheduling (1x/2x rate, forward/backward/paused seek, SPA video switch, retry exhaustion source fallback, 0 expired requests, peak=1) passed.');
     } finally {
       localServer.closeAllConnections();
       localServer.close();

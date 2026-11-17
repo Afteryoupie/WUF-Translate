@@ -270,7 +270,7 @@ export async function translateWithOpenAICompat(
   if (!response.ok) {
     const errMsg = await extractHttpErrorMessage(response);
     throw new WufProviderError(errMsg, {
-      code: 'HTTP_ERROR',
+      code: /\bsafety guardrails were triggered\b/i.test(errMsg) ? 'CONTENT_REJECTED' : 'HTTP_ERROR',
       provider: providerTag,
       status: response.status,
     });

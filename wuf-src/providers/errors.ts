@@ -2,6 +2,7 @@ export type WufProviderErrorCode =
   | 'TIMEOUT'
   | 'ABORTED'
   | 'HTTP_ERROR'
+  | 'CONTENT_REJECTED'
   | 'INVALID_RESPONSE'
   | 'CONFIG_ERROR'
   | 'WATCHDOG_ERROR';
