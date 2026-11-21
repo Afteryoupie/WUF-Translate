@@ -73,8 +73,11 @@ function domSignature(el: HTMLElement): string {
 const TRANSLATABLE_SELECTOR =
   'p, h1, h2, h3, h4, h5, h6, li, blockquote, td, th, figcaption, dt, dd, div.u-margin-s-bottom[id^="p"], div.u-margin-s-bottom > div[id^="p"], div.u-margin-s-bottom[id^="abspara"], ytd-comment-renderer #content-text, ytd-comment-view-model #content-text';
 
+const YOUTUBE_TITLE_SELECTOR =
+  'ytd-watch-metadata h1, ytd-video-primary-info-renderer h1, yt-shorts-video-title-view-model h1, ytd-reel-player-overlay-renderer h1';
+
 const EXCLUDED_ANCESTOR_SELECTOR =
-  'script, style, noscript, code, pre, textarea, input, select, button, svg, math, [contenteditable="true"], [data-wuf-ignore], .wuf-bilingual-translation, ytd-watch-flexy #secondary, ytd-watch-next-secondary-results-renderer';
+  'script, style, noscript, code, pre, textarea, input, select, button, svg, math, [contenteditable="true"], [data-wuf-ignore], .wuf-bilingual-translation, ytd-watch-flexy #secondary, ytd-watch-next-secondary-results-renderer, ytd-engagement-panel-title-header-renderer';
 
 const INLINE_TAG_NAMES = new Set([
   'A',
@@ -120,8 +123,11 @@ export function extractTranslatableContent(el: HTMLElement): {
   text: string;
   tagsMap?: Map<string, Node>;
 } {
-  if (el.matches?.('ytd-watch-metadata h1, ytd-video-primary-info-renderer h1')) {
-    return { text: (el.querySelector('yt-formatted-string')?.textContent || el.textContent || '').trim() };
+  if (el.matches?.(YOUTUBE_TITLE_SELECTOR)) {
+    const titleNode =
+      el.querySelector('yt-formatted-string') ||
+      el.querySelector('.ytAttributedStringHost');
+    return { text: (titleNode?.textContent || el.textContent || '').trim() };
   }
   // YouTube attributed strings are framework-owned wrappers, not semantic inline markup.
   // Sending their placeholders to translation models can echo English or corrupt delimiters.
@@ -301,14 +307,17 @@ export function applyTranslationToElement(
   restoreYouTubeTitle(el);
   // YouTube holds references to the original title's custom elements. Replacing
   // their parent innerHTML breaks updates on later videos, even with WUF off.
-  if (el.matches?.('ytd-watch-metadata h1, ytd-video-primary-info-renderer h1')) {
+  if (el.matches?.(YOUTUBE_TITLE_SELECTOR)) {
     const translation = doc.createElement('div');
     translation.className = 'wuf-bilingual-translation';
     translation.setAttribute('data-wuf-injected', 'true');
     translation.setAttribute('role', 'heading');
     translation.setAttribute('aria-level', '1');
     translation.textContent = cleanTranslation;
-    const titleText = el.querySelector('yt-formatted-string') || el;
+    const titleText =
+      el.querySelector('yt-formatted-string') ||
+      el.querySelector('.ytAttributedStringHost') ||
+      el;
     const computed = doc.defaultView?.getComputedStyle(titleText);
     // Chromium can return an empty font shorthand when individual font fields
     // are present. Copy each field so the translation cannot fall back to 14px.
@@ -491,6 +500,22 @@ export class WufDomTranslator {
     this.spaObserver = new MutationObserver(mutations => {
       let hasAddedTranslatable = false;
       for (const m of mutations) {
+        if (m.type === 'attributes') {
+          const el = m.target as HTMLElement;
+          const hasNested =
+            typeof el?.querySelector === 'function' &&
+            Boolean(el.querySelector(TRANSLATABLE_SELECTOR));
+          if (
+            el &&
+            el.nodeType === 1 &&
+            !el.closest?.('[data-wuf-injected="true"], .wuf-bilingual-translation') &&
+            (isTranslatableElement(el) || hasNested)
+          ) {
+            hasAddedTranslatable = true;
+            break;
+          }
+          continue;
+        }
         if (m.type === 'characterData') {
           const parent = m.target.parentElement;
           if (
@@ -554,6 +579,8 @@ export class WufDomTranslator {
         childList: true,
         subtree: true,
         characterData: true,
+        attributes: true,
+        attributeFilter: ['visibility', 'hidden'],
       });
     } catch {
       // Best-effort

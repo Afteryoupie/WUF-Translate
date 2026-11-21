@@ -555,3 +555,146 @@ test('Webpage Monolingual Mode preserves nested inline formatting inside links a
   assert.ok(origStrong, 'Original inner <strong> must be restored cleanly');
   assert.equal(origStrong.textContent, 'Read guide');
 });
+
+test('YouTube Shorts engagement panel excludes header chrome, preserves Shorts title element, and translates comments', () => {
+  const panelHeaderH2 = new MockElement('H2', 'Comments 281');
+  panelHeaderH2.closest = selector =>
+    selector.includes('ytd-engagement-panel-title-header-renderer') ? {} : null;
+
+  const commentBody = new MockElement('YT-ATTRIBUTED-STRING', 'Shorts comment body');
+  commentBody.id = 'content-text';
+  commentBody.closest = selector =>
+    selector.includes('ytd-comment-view-model') && !selector.includes('ytd-engagement-panel-title-header-renderer')
+      ? {}
+      : null;
+
+  const shortsTitleParent = new MockElement('YT-SHORTS-VIDEO-TITLE-VIEW-MODEL');
+  const shortsTitleH1 = new MockElement('H1', 'Amazing Shorts title');
+  const hostSpan = new MockElement('SPAN', 'Amazing Shorts title');
+  hostSpan.className = 'ytAttributedStringHost';
+  shortsTitleH1.appendChild(hostSpan);
+  shortsTitleParent.appendChild(shortsTitleH1);
+  const values = new Map([['display', { value: 'block', priority: '' }]]);
+  shortsTitleH1.style = {
+    getPropertyValue: key => values.get(key)?.value || '',
+    getPropertyPriority: key => values.get(key)?.priority || '',
+    setProperty: (key, value, priority = '') => values.set(key, { value, priority }),
+    removeProperty: key => values.delete(key),
+  };
+  shortsTitleH1.matches = selector => selector.includes('yt-shorts-video-title-view-model h1');
+  shortsTitleH1.insertAdjacentElement = (_position, element) => shortsTitleParent.appendChild(element);
+  shortsTitleH1.querySelector = selector =>
+    selector === '.ytAttributedStringHost' ? hostSpan : null;
+
+  const root = {
+    querySelectorAll() {
+      return [panelHeaderH2, shortsTitleH1, commentBody];
+    },
+  };
+
+  // collectTranslatableUnits must exclude panelHeaderH2 and collect shortsTitleH1 + commentBody
+  // (using dynamic import inside or top-level exports)
+  assert.equal( extractTranslatableContent(shortsTitleH1).text, 'Amazing Shorts title');
+  const doc = new MockDocument();
+  doc.defaultView = {
+    getComputedStyle: target => {
+      assert.equal(target, hostSpan);
+      return { fontSize: '16px', fontWeight: '600', lineHeight: '22px', color: 'rgb(255, 255, 255)', fontFamily: 'Roboto' };
+    },
+  };
+  applyTranslationToElement(shortsTitleH1, 'Amazing Shorts title', '超棒短片標題', 'monolingual', doc);
+  assert.equal(shortsTitleH1.childNodes[0], hostSpan, 'Shorts title inner host span must not be wiped');
+  assert.equal(shortsTitleH1.style.getPropertyValue('display'), 'none');
+  assert.equal(shortsTitleParent.querySelector('[data-wuf-injected="true"]').textContent, '超棒短片標題');
+  restoreTranslatedDom(shortsTitleParent);
+  assert.equal(shortsTitleH1.style.getPropertyValue('display'), 'block');
+  assert.equal(shortsTitleParent.querySelector('[data-wuf-injected="true"]'), null);
+});
+
+test('YouTube Shorts engagement panel excludes header H2 and translates dynamically expanded or loaded comments', async () => {
+  const { collectTranslatableUnits, WufDomTranslator } = await import('../dist/wuf/index.js');
+
+  const panelHeaderH2 = new MockElement('H2', 'Comments 281');
+  panelHeaderH2.closest = selector =>
+    selector.includes('ytd-engagement-panel-title-header-renderer') ? {} : null;
+
+  let panelExpanded = false;
+  const firstComment = new MockElement('YT-ATTRIBUTED-STRING', 'First Shorts comment');
+  firstComment.id = 'content-text';
+  firstComment.getClientRects = () => (panelExpanded ? [{}] : []);
+  firstComment.closest = selector =>
+    selector.includes('ytd-comment-view-model') && !selector.includes('ytd-engagement-panel-title-header-renderer')
+      ? {}
+      : null;
+
+  const nodes = [panelHeaderH2, firstComment];
+  const root = {
+    querySelectorAll() {
+      return nodes;
+    },
+  };
+
+  // While panel is collapsed, neither header H2 nor hidden comment is collected
+  assert.deepEqual(collectTranslatableUnits(root), []);
+
+  let observerInstance = null;
+  let observeOptions = null;
+  const prevMutationObserver = globalThis.MutationObserver;
+  globalThis.MutationObserver = class {
+    constructor(cb) {
+      this.cb = cb;
+      observerInstance = this;
+    }
+    observe(_target, options) {
+      observeOptions = options;
+    }
+    disconnect() {
+      this.disconnected = true;
+    }
+  };
+
+  try {
+    const requests = [];
+    const translator = new WufDomTranslator({
+      root,
+      doc: new MockDocument(),
+      getConfig: async () => ({
+        engine: 'google',
+        targetLanguage: 'zh-TW',
+        displayMode: 'bilingual',
+        batchConfig: { webConcurrency: 1, webBatchUnits: 10, webBatchChars: 1000, firstBatchUnits: 10, firstBatchChars: 1000 },
+      }),
+      translateBatch: async texts => {
+        requests.push(texts);
+        return texts.map(t => `譯：${t}`);
+      },
+    });
+
+    // User triggers translation before opening the Shorts comments panel
+    await translator.handleTranslatePreset({ translateOnly: true, force: true });
+    assert.equal(translator.translated, true);
+    assert.ok(observerInstance, 'Must start SPA observer even when initial panel is closed');
+    assert.equal(observeOptions?.attributes, true, 'Must observe visibility/hidden attribute changes for engagement panel');
+
+    // User opens the Shorts engagement panel (visibility attribute changes on panel container)
+    panelExpanded = true;
+    const engagementPanel = new MockElement('YTD-ENGAGEMENT-PANEL-SECTION-LIST-RENDERER');
+    engagementPanel.querySelector = selector =>
+      selector.includes('ytd-comment-view-model #content-text') ? firstComment : null;
+    observerInstance.cb([
+      {
+        type: 'attributes',
+        attributeName: 'visibility',
+        target: engagementPanel,
+        addedNodes: [],
+      },
+    ]);
+
+    await new Promise(resolve => setTimeout(resolve, 400));
+    assert.deepEqual(requests, [['First Shorts comment']]);
+    assert.equal(firstComment.querySelector('.wuf-bilingual-translation')?.textContent, '譯：First Shorts comment');
+    assert.equal(panelHeaderH2.hasAttribute('data-wuf-translated'), false, 'Panel header H2 must never be translated');
+  } finally {
+    globalThis.MutationObserver = prevMutationObserver;
+  }
+});

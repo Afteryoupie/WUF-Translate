@@ -369,7 +369,7 @@ export class FrameSessionManager {
   }
   private pump(tab: TabSession): void {
     const limit = tab.settings.activeProviderId === "openai-compat-local"
-      ? Math.max(1, Math.min(2, tab.settings.concurrency || 1))
+      ? Math.max(1, Math.min(4, tab.settings.concurrency || 1))
       : 2;
     while (tab.running < limit && tab.queue.length) {
       let index = tab.queue.findIndex(item => item.frameId !== tab.lastFrame);

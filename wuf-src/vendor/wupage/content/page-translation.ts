@@ -22,6 +22,7 @@ import { invalidatePendingDocumentTranslations } from "./translation-lifecycle";
 const VIEWPORT_MARGIN_RATIO = 0.75;
 const MIN_VIEWPORT_MARGIN = 240;
 const MAX_PAGE_CONCURRENCY = 2;
+const MAX_LOCAL_PAGE_CONCURRENCY = 4;
 const MAX_PROGRESSIVE_CHUNK_SIZE = 4000;
 const MAX_LLM_BATCH_ITEMS = 16;
 const VIEWPORT_DEBOUNCE_MS = 100;
@@ -207,7 +208,10 @@ export function startLocalPageTranslation(settings: ExtensionSettings, reuseResu
     entries,
     queue: [],
     activeCount: 0,
-    maxConcurrency: Math.min(MAX_PAGE_CONCURRENCY, performance.concurrency),
+    maxConcurrency: Math.min(
+      settings.activeProviderId === "openai-compat-local" ? MAX_LOCAL_PAGE_CONCURRENCY : MAX_PAGE_CONCURRENCY,
+      performance.concurrency
+    ),
     cancelled: false,
     translated: restored,
     cached: restored,

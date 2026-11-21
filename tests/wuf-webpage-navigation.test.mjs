@@ -153,3 +153,134 @@ test('crossTabSticky continues translation across SPA navigation and new tabs un
   assert.equal(newTab.isSticky(), false);
   assert.equal(newTab.visibleTitle(), 'Second video');
 });
+
+test('YouTube Shorts route binds to ytd-shorts instead of hidden ytd-watch-flexy #primary and translates Shorts comments across navigation', async () => {
+  let listener;
+  const requests = [], events = new Map();
+  const hiddenWatchTitle = new Element('Hidden watch video title');
+  hiddenWatchTitle.matches = () => true;
+
+  const shortsComment = new Element('First Shorts comment');
+  shortsComment.id = 'content-text';
+
+  const watchPrimaryRoot = {
+    querySelectorAll(selector) {
+      if (selector.includes('p, h1')) return [hiddenWatchTitle];
+      return [];
+    },
+  };
+
+  let injectedBadge = null;
+  shortsComment.appendChild = child => {
+    injectedBadge = child;
+    shortsComment.childNodes.push(child);
+    return child;
+  };
+  shortsComment.querySelector = selector =>
+    selector === '[data-wuf-injected="true"]' || selector === '.wuf-bilingual-translation' ? injectedBadge : null;
+
+  const shortsRoot = {
+    querySelectorAll(selector) {
+      if (selector.includes('ytd-comment-view-model #content-text')) return [shortsComment];
+      if (selector === '[data-wuf-injected="true"]') return injectedBadge ? [injectedBadge] : [];
+      if (selector === '[data-wuf-translated]') return shortsComment.hasAttribute('data-wuf-translated') ? [shortsComment] : [];
+      return [];
+    },
+  };
+
+  const document = {
+    body: shortsRoot,
+    documentElement: new Element(),
+    querySelector(selector) {
+      if (selector === 'ytd-watch-flexy #primary') return watchPrimaryRoot;
+      if (selector === 'ytd-watch-flexy:not([hidden]) #primary') return null;
+      if (selector === 'ytd-shorts' || selector === 'ytd-shorts:not([hidden])') return shortsRoot;
+      return null;
+    },
+    createElement: () => {
+      const el = new Element();
+      el.remove = () => {
+        if (injectedBadge === el) injectedBadge = null;
+      };
+      return el;
+    },
+    createTextNode: text => ({ textContent: text }),
+  };
+
+  const location = { hostname: 'www.youtube.com', href: 'https://www.youtube.com/shorts/1eLbxAwuclI' };
+  const window = { addEventListener: (name, fn) => events.set(name, fn) };
+  window.top = window;
+  const settings = {
+    runtimeSettings: {
+      webpage: {
+        engine: 'openai-compat-local',
+        targetLanguage: 'zh-TW',
+        displayMode: 'bilingual',
+        crossTabSticky: true,
+        autoTranslateHosts: [],
+      },
+    },
+    webpageProvider: { profileType: 'local' },
+  };
+
+  let stickyActive = false;
+  vm.runInNewContext(script, {
+    document,
+    window,
+    location,
+    URL,
+    AbortController,
+    console,
+    setTimeout: (fn, ms) => {
+      const timer = setTimeout(fn, ms);
+      timer.unref();
+      return timer;
+    },
+    clearTimeout,
+    performance: { getEntriesByType: () => [{ type: 'navigate' }] },
+    MutationObserver: class {
+      observe() {}
+      disconnect() {}
+    },
+    chrome: {
+      runtime: {
+        onMessage: { addListener: fn => { listener = fn; } },
+        sendMessage: async message => {
+          if (message.type === 'wuf:get-settings') return { ok: true, data: settings };
+          if (message.type === 'wuf:sticky-set') { stickyActive = true; return { ok: true, data: { success: true } }; }
+          if (message.type === 'wuf:sticky-clear') { stickyActive = false; return { ok: true, data: { success: true } }; }
+          if (message.type === 'wuf:sticky-query') return { ok: true, data: { shouldTranslate: stickyActive } };
+          if (message.type === 'wuf:translate-text') {
+            requests.push(Array.from(message.request.texts));
+            return {
+              ok: true,
+              data: {
+                translations: message.request.texts.map(t =>
+                  t === 'First Shorts comment' ? '第一則短片留言' : '第二則短片留言',
+                ),
+              },
+            };
+          }
+          return { ok: true, data: {} };
+        },
+      },
+    },
+  });
+
+  await tick();
+  await new Promise(resolve => listener({ type: 'wuf:translate-page', payload: { force: true, translateOnly: true } }, {}, resolve));
+  assert.deepEqual(requests, [['First Shorts comment']], 'Must translate Shorts comments instead of hidden watch-flexy #primary');
+  assert.equal(injectedBadge?.textContent, '第一則短片留言');
+
+  // Swipe / navigate to next Short
+  events.get('yt-navigate-start')?.();
+  location.href = 'https://www.youtube.com/shorts/nextShortId';
+  shortsComment.textContent = 'Second Shorts comment';
+  events.get('yt-navigate-finish')?.();
+  await tick();
+  await tick();
+  await tick();
+
+  assert.deepEqual(requests, [['First Shorts comment'], ['Second Shorts comment']]);
+  assert.equal(injectedBadge?.textContent, '第二則短片留言');
+});

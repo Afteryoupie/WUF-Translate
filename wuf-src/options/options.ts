@@ -211,6 +211,12 @@ export async function initOptionsPage(): Promise<void> {
   const localTimeout = getInput('wuf-local-timeout');
   const localThinking = getSelect('wuf-local-thinking');
   const localConcurrency = getInput('wuf-local-concurrency');
+  const clampLocalConcurrency = (value: number) =>
+    Math.min(Number(localConcurrency.max), Math.max(Number(localConcurrency.min), value));
+  const readLocalConcurrency = (fallback: number) => {
+    const value = localConcurrency.valueAsNumber;
+    return clampLocalConcurrency(Number.isInteger(value) ? value : fallback);
+  };
   const localBatchUnits = getInput('wuf-local-batch-units');
   const localBatchChars = getInput('wuf-local-batch-chars');
   const localSystemPrompt = getTextArea('wuf-local-system-prompt');
@@ -363,7 +369,7 @@ export async function initOptionsPage(): Promise<void> {
       localTemp.value = local.temperature === null ? '' : String(local.temperature);
       localTimeout.value = String(local.fetchTimeoutSec);
       localThinking.value = local.thinkingLevel;
-      localConcurrency.value = String(local.webConcurrency);
+      localConcurrency.value = String(clampLocalConcurrency(local.webConcurrency));
       localBatchUnits.value = String(local.webBatchUnits);
       localBatchChars.value = String(local.webBatchChars);
       localSystemPrompt.value = local.systemPrompt;
@@ -459,10 +465,7 @@ export async function initOptionsPage(): Promise<void> {
             prev.providers.local.fetchTimeoutSec,
           ),
           thinkingLevel: localThinking.value as ThinkingLevel,
-          webConcurrency: parseIntOrFallback(
-            localConcurrency.value,
-            prev.providers.local.webConcurrency,
-          ),
+          webConcurrency: readLocalConcurrency(prev.providers.local.webConcurrency),
           webBatchUnits: parseIntOrFallback(
             localBatchUnits.value,
             prev.providers.local.webBatchUnits,
@@ -532,6 +535,11 @@ export async function initOptionsPage(): Promise<void> {
       saveStatusPill.textContent = t(currentLocale, 'common.savedAuto');
     }
   };
+
+  localConcurrency.addEventListener('change', () => {
+    const savedValue = currentSnapshot?.savedSettings.providers.local.webConcurrency ?? 1;
+    localConcurrency.value = String(readLocalConcurrency(savedValue));
+  });
 
   const formControls = root.querySelectorAll<HTMLElement>(
     'input:not(#wuf-json-transfer-box), select, textarea:not(#wuf-json-transfer-box):not(#wuf-webpage-auto-hosts)',

@@ -46,6 +46,30 @@ function showTranslationProgress(completed: number, total: number, active: boole
   }
 }
 
+function resolveYouTubeRoot(): ParentNode {
+  let pathname = location.pathname;
+  if (!pathname && location.href) {
+    try {
+      pathname = new URL(location.href).pathname;
+    } catch {
+      pathname = '';
+    }
+  }
+  if (/^\/shorts(?:\/|$)/.test(pathname || '')) {
+    return (
+      document.querySelector('ytd-shorts:not([hidden])') ||
+      document.querySelector('ytd-shorts') ||
+      document.querySelector('ytd-page-manager') ||
+      document.body
+    );
+  }
+  return (
+    document.querySelector('ytd-watch-flexy:not([hidden]) #primary') ||
+    document.querySelector('ytd-watch-flexy #primary') ||
+    document.body
+  );
+}
+
 function ensureTranslator(): WufDomTranslator | WufWuPageTranslator {
   if (pageTranslator) return pageTranslator;
   if (!preserveYouTube) {
@@ -59,7 +83,7 @@ function ensureTranslator(): WufDomTranslator | WufWuPageTranslator {
   }
   pageTranslator = new WufDomTranslator({
     // Keep YouTube's endless recommendation feed out of the comment queue.
-    root: document.querySelector('ytd-watch-flexy #primary') || document.body,
+    root: resolveYouTubeRoot(),
     doc: document,
     onProgress: showTranslationProgress,
     onStateChange: (translated) => {

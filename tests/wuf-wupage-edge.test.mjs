@@ -102,6 +102,8 @@ test('Edge loads the complete extension: WuPage engine through real content/back
     await worker.send('Runtime.enable');
     await until(() => evaluate(worker, `typeof chrome !== 'undefined' && !!chrome.storage?.sync`), 'extension worker APIs');
     const settings = structuredClone(DEFAULT_SETTINGS); settings.openccEnabled = false;
+    settings.uiLocale = 'zh-TW';
+    settings.providers.local.webConcurrency = 8;
     settings.webpage.engine = 'openai-compat-online'; settings.providers.online.baseUrl = origin + '/v1'; settings.providers.online.model = 'fixture-model';
     settings.providers.online.webBatchUnits = 1; settings.providers.online.webBatchChars = 1200; settings.providers.online.webConcurrency = 1;
     const saveSettings = () => evaluate(worker, `chrome.storage.sync.set({wufSettings:${JSON.stringify(settings)}})`);
@@ -111,6 +113,18 @@ test('Edge loads the complete extension: WuPage engine through real content/back
     const optionsInfo = await until(async () => (await targets()).find(item => item.id === optionsTarget.targetId), 'options tab');
     const options = await connect(optionsInfo.webSocketDebuggerUrl); clients.push(options);
     await until(() => evaluate(options, `document.readyState==='complete' && !!document.querySelector('#wuf-tab-btn-webpage')`), 'options loaded');
+    await until(() => evaluate(options, `document.querySelector('#wuf-local-concurrency').value !== ''`), 'local concurrency setting loaded');
+    assert.deepEqual(await evaluate(options, `(() => {
+      const local = document.querySelector('#wuf-local-concurrency');
+      const online = document.querySelector('#wuf-online-concurrency');
+      return [local.min, local.max, local.value, local.labels[0].textContent.trim(), online.max];
+    })()`), ['1', '4', '4', '網頁並行請求數 (1–4)', '50']);
+    await evaluate(options, `(() => {
+      const local = document.querySelector('#wuf-local-concurrency');
+      local.value = '7';
+      local.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    await until(() => evaluate(worker, `chrome.storage.sync.get('wufSettings').then(x=>x.wufSettings.providers.local.webConcurrency===4)`), 'local concurrency saved at the upper limit');
     assert.equal(await evaluate(options, `!!document.querySelector('#wuf-webpage-auto-hosts') && !!document.querySelector('#wuf-webpage-test')`), true, 'Webpage settings must manage existing auto-translate sites and test the selected service');
     await evaluate(options, `document.querySelector('#wuf-tab-btn-webpage').click();document.querySelector('#wuf-webpage-auto-hosts').value=${JSON.stringify('Example.COM\nhttps://docs.example.org/path')};document.querySelector('#wuf-webpage-auto-hosts-save').click()`);
     await until(() => evaluate(worker, `chrome.storage.sync.get('wufSettings').then(x=>JSON.stringify(x.wufSettings.webpage.autoTranslateHosts)===JSON.stringify(['example.com','docs.example.org']))`), 'auto-translate sites saved');
@@ -276,7 +290,7 @@ test('Edge loads the complete extension: WuPage engine through real content/back
     t.diagnostic('Real extension: both YouTube comment layouts use the existing WUF path and retain original wrappers.');
 
     // Verify dedicated local-LLM webpage pipeline in real Edge browser:
-    // - single concurrency (max 1 in-flight completion)
+    // - no more than four in-flight completions, even with a higher configured value
     // - plain-text per-paragraph & sentence-chunk requests (no JSON array or ---WUF-SEG---, stream: false)
     // - single-paragraph failure isolation without blocking subsequent visible paragraphs
     let inFlightLocal = 0;
@@ -297,7 +311,7 @@ test('Edge loads the complete extension: WuPage engine through real content/back
           const body = JSON.parse(raw);
           const usr = String(body.messages.at(-1).content);
           localRequests.push({ usr, stream: body.stream, sys: String(body.messages[0].content) });
-          await sleep(25);
+          await sleep(100);
           if (usr.includes('Refused dialogue.')) {
             response.writeHead(500, { 'Content-Type': 'application/json' }).end(
               JSON.stringify({ error: { message: "The model's safety guardrails were triggered." } }),
@@ -354,6 +368,7 @@ test('Edge loads the complete extension: WuPage engine through real content/back
       settings.webpage.displayMode = 'bilingual';
       settings.providers.local.baseUrl = `${localOrigin}/v1`;
       settings.providers.local.model = 'local-edge-model';
+      settings.providers.local.webConcurrency = 8;
       await saveSettings();
 
       await page.send('Page.navigate', { url: `${localOrigin}/local-article` });
@@ -409,7 +424,7 @@ test('Edge loads the complete extension: WuPage engine through real content/back
       assert.deepEqual(localCheck.bilingualLiLinks.map(l => [l.href, l.text]), [['#what-it-is', '這是什麼']]);
       assert.deepEqual(localCheck.bilingualDropLinks.map(l => [l.href, l.rel]), [['https://recipelab.io', 'nofollow']]);
       assert.notEqual(localCheck.bilingualDropLinks[0].text.trim(), localCheck.bilingualDropText.trim(), 'Whole paragraph must not be swallowed into one link');
-      assert.equal(maxInFlightLocal, 1, 'Local LLM webpage translation must keep concurrency at 1');
+      assert.equal(maxInFlightLocal, 4, 'Local LLM webpage translation must reach and cap concurrency at 4');
       assert.ok(localRequests.every(r => r.stream === false), 'Every local request must set stream: false');
       assert.ok(localRequests.every(r => !r.usr.startsWith('{') && !r.usr.includes('---WUF-SEG---')), 'Local requests must be plain text');
       assert.ok(localRequests.filter(r => r.usr.includes('Sentence ')).length >= 2, 'Long paragraph must split across multiple sentence requests');
