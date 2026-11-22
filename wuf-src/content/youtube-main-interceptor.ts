@@ -1,6 +1,213 @@
-import { getCurrentWatchVideoId } from '../subtitle/youtube-pipeline.ts';
+import {
+  getCurrentWatchVideoId,
+  hasAutoTranslation,
+  type CaptionTrackInfo,
+} from '../subtitle/youtube-pipeline.ts';
 
 const TIMEDTEXT_EVENT_NAME = 'wuf-timedtext-captured';
+const CAPTION_PREF_KEY = 'yt-player-caption-language-preferences';
+const DEFERRED_RESTORE_DELAY_MS = 150;
+
+interface StorageSnapshot {
+  local: string | null;
+  session: string | null;
+}
+
+interface CaptionTrackSnapshot {
+  languageCode: string;
+  kind?: string;
+  vssId?: string;
+}
+
+interface PreWufCaptionSnapshot {
+  videoId: string;
+  wasNativeCcEnabled: boolean;
+  activeTrack: CaptionTrackSnapshot | null;
+  storage: StorageSnapshot;
+  mutatedByWuf: boolean;
+  lastForcedLanguageCode: string | null;
+}
+
+interface YouTubeAudioFormatLike {
+  audioTrack?: {
+    id?: string;
+    displayName?: string;
+    audioIsDefault?: boolean;
+  };
+}
+
+interface YouTubePlayerResponseLike {
+  videoDetails?: { videoId?: string };
+  streamingData?: {
+    adaptiveFormats?: YouTubeAudioFormatLike[];
+    formats?: YouTubeAudioFormatLike[];
+  };
+  captions?: {
+    playerCaptionsTracklistRenderer?: {
+      captionTracks?: Array<{
+        languageCode: string;
+        kind?: string;
+        baseUrl?: string;
+        name?: { simpleText?: string };
+        vssId?: string;
+        isTranslatable?: boolean;
+      }>;
+      audioTracks?: Array<{
+        defaultCaptionTrackIndex?: number;
+        captionTrackIndices?: number[];
+      }>;
+      defaultAudioTrackIndex?: number;
+    };
+  };
+}
+
+interface YouTubePlayerLike {
+  getPlayerResponse?: () => YouTubePlayerResponseLike | null | undefined;
+  loadModule?: (name: string) => void;
+  setOption?: (module: string, opt: string, val: unknown) => void;
+  getOption?: (module: string, opt: string) => unknown;
+}
+
+export function extractOriginalAudioLang(
+  resp: YouTubePlayerResponseLike | null | undefined,
+): string | undefined {
+  const formats: YouTubeAudioFormatLike[] = [
+    ...(Array.isArray(resp?.streamingData?.adaptiveFormats)
+      ? resp.streamingData.adaptiveFormats
+      : []),
+    ...(Array.isArray(resp?.streamingData?.formats) ? resp.streamingData.formats : []),
+  ];
+  let fallbackId: string | undefined;
+  for (const fmt of formats) {
+    const id = fmt?.audioTrack?.id;
+    if (typeof id !== 'string' || !id.trim()) continue;
+    if (fmt.audioTrack?.audioIsDefault === true) {
+      const lang = id.split('.')[0].trim();
+      if (lang) return lang;
+    }
+    if (!fallbackId) {
+      fallbackId = id;
+    }
+  }
+  if (fallbackId) {
+    const lang = fallbackId.split('.')[0].trim();
+    if (lang) return lang;
+  }
+  return undefined;
+}
+
+export function extractDefaultCaptionTrackIndex(
+  resp: YouTubePlayerResponseLike | null | undefined,
+): number | undefined {
+  const renderer = resp?.captions?.playerCaptionsTracklistRenderer;
+  const audioTracks = renderer?.audioTracks;
+  if (!Array.isArray(audioTracks) || audioTracks.length === 0) return undefined;
+  const defaultAudioIdx =
+    typeof renderer?.defaultAudioTrackIndex === 'number' &&
+    renderer.defaultAudioTrackIndex >= 0 &&
+    renderer.defaultAudioTrackIndex < audioTracks.length
+      ? renderer.defaultAudioTrackIndex
+      : 0;
+  const idx = audioTracks[defaultAudioIdx]?.defaultCaptionTrackIndex;
+  return typeof idx === 'number' && idx >= 0 ? idx : undefined;
+}
+
+function getSafeStorage(kind: 'localStorage' | 'sessionStorage'): Storage | null {
+  try {
+    const store = globalThis[kind];
+    if (store && typeof store.getItem === 'function') {
+      return store;
+    }
+  } catch {
+    // Restricted storage access
+  }
+  return null;
+}
+
+function safeGetStorageItem(storage: Storage | null, key: string): string | null {
+  if (!storage) return null;
+  try {
+    return storage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeRestoreStorageItem(storage: Storage | null, key: string, value: string | null): void {
+  if (!storage) return;
+  try {
+    if (value === null) {
+      storage.removeItem(key);
+    } else {
+      storage.setItem(key, value);
+    }
+  } catch {
+    // Ignore storage quota or security errors
+  }
+}
+
+function getStorageSnapshot(): StorageSnapshot {
+  return {
+    local: safeGetStorageItem(getSafeStorage('localStorage'), CAPTION_PREF_KEY),
+    session: safeGetStorageItem(getSafeStorage('sessionStorage'), CAPTION_PREF_KEY),
+  };
+}
+
+export function extractPreferredLanguageCode(raw: string | null): string | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as {
+      languageCode?: unknown;
+      data?: unknown;
+    } | null;
+    if (parsed && typeof parsed === 'object') {
+      if (typeof parsed.languageCode === 'string' && parsed.languageCode) {
+        return parsed.languageCode;
+      }
+      if (typeof parsed.data === 'string') {
+        try {
+          const inner = JSON.parse(parsed.data) as { languageCode?: unknown } | null;
+          if (inner && typeof inner === 'object' && typeof inner.languageCode === 'string' && inner.languageCode) {
+            return inner.languageCode;
+          }
+        } catch {
+          // Fall through to regex fallback
+        }
+      } else if (
+        parsed.data &&
+        typeof parsed.data === 'object' &&
+        typeof (parsed.data as { languageCode?: unknown }).languageCode === 'string' &&
+        (parsed.data as { languageCode: string }).languageCode
+      ) {
+        return (parsed.data as { languageCode: string }).languageCode;
+      }
+    }
+  } catch {
+    // Fall through to regex fallback
+  }
+  const match = raw.match(/\\?"languageCode\\?"\s*:\s*\\?"([^"\\]+)\\?"/);
+  return match ? match[1] : null;
+}
+
+function restoreStorageIfChanged(snapshot: StorageSnapshot, expectedForcedLang?: string): void {
+  const entries: Array<[Storage | null, string | null]> = [
+    [getSafeStorage('localStorage'), snapshot.local],
+    [getSafeStorage('sessionStorage'), snapshot.session],
+  ];
+  const expectedLower = expectedForcedLang?.toLowerCase();
+  for (const [storage, before] of entries) {
+    if (!storage) continue;
+    const current = safeGetStorageItem(storage, CAPTION_PREF_KEY);
+    if (current === before) continue;
+    if (expectedLower) {
+      const currentLang = extractPreferredLanguageCode(current);
+      if (!currentLang || currentLang.toLowerCase() !== expectedLower) {
+        continue;
+      }
+    }
+    safeRestoreStorageItem(storage, CAPTION_PREF_KEY, before);
+  }
+}
 
 export function isTimedTextUrl(
   url: string,
@@ -108,39 +315,99 @@ export function installYouTubeMainWorldInterceptor(): void {
   }
 
   // ─── Player Response & Captions Control Bridge ───────────
+  let preWufSnapshot: PreWufCaptionSnapshot | null = null;
+  let deferredPrefRestoreTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const clearDeferredPrefRestore = () => {
+    if (deferredPrefRestoreTimer !== null) {
+      clearTimeout(deferredPrefRestoreTimer);
+      deferredPrefRestoreTimer = null;
+    }
+  };
+
+  const scheduleDeferredPrefRestore = (snapshot: StorageSnapshot, forcedLang: string) => {
+    clearDeferredPrefRestore();
+    deferredPrefRestoreTimer = setTimeout(() => {
+      deferredPrefRestoreTimer = null;
+      restoreStorageIfChanged(snapshot, forcedLang);
+    }, DEFERRED_RESTORE_DELAY_MS);
+  };
+
+  const getPlayerElement = (): YouTubePlayerLike | null => {
+    if (typeof document === 'undefined') return null;
+    return (document.querySelector('#movie_player') ||
+      document.querySelector('.html5-video-player')) as unknown as YouTubePlayerLike | null;
+  };
+
+  const capturePreWufSnapshot = (
+    player: YouTubePlayerLike | null,
+    wasNativeCcEnabledHint?: boolean,
+  ): void => {
+    const currentVideoId = getCurrentWatchVideoId();
+    if (preWufSnapshot !== null && preWufSnapshot.videoId === currentVideoId) return;
+    let activeTrack: CaptionTrackSnapshot | null = null;
+    try {
+      const current = player?.getOption?.('captions', 'track') as {
+        languageCode?: unknown;
+        kind?: unknown;
+        vssId?: unknown;
+      } | null | undefined;
+      if (current && typeof current === 'object' && typeof current.languageCode === 'string' && current.languageCode) {
+        activeTrack = {
+          languageCode: current.languageCode,
+          kind: typeof current.kind === 'string' ? current.kind : '',
+          ...(typeof current.vssId === 'string' && current.vssId ? { vssId: current.vssId } : {}),
+        };
+      }
+    } catch {
+      activeTrack = null;
+    }
+    preWufSnapshot = {
+      videoId: currentVideoId,
+      wasNativeCcEnabled:
+        typeof wasNativeCcEnabledHint === 'boolean'
+          ? wasNativeCcEnabledHint || Boolean(activeTrack)
+          : Boolean(activeTrack),
+      activeTrack,
+      storage: getStorageSnapshot(),
+      mutatedByWuf: false,
+      lastForcedLanguageCode: null,
+    };
+  };
+
+  globalThis.window?.addEventListener('yt-navigate-finish', () => {
+    const currentVideoId = getCurrentWatchVideoId();
+    if (preWufSnapshot && preWufSnapshot.videoId !== currentVideoId) {
+      clearDeferredPrefRestore();
+      preWufSnapshot = null;
+    }
+  });
+
   globalThis.window?.addEventListener('wuf-yt-request-tracks', () => {
     try {
-      const player = (document.querySelector('#movie_player') ||
-        document.querySelector('.html5-video-player')) as unknown as {
-        getPlayerResponse?: () => {
-          captions?: {
-            playerCaptionsTracklistRenderer?: {
-              captionTracks?: Array<{
-                languageCode: string;
-                kind?: string;
-                baseUrl?: string;
-                name?: { simpleText?: string };
-                vssId?: string;
-                isTranslatable?: boolean;
-              }>;
-            };
-          };
-        };
-        getOption?: (module: string, option: string) => unknown;
-      };
+      const player = getPlayerElement();
 
       let tracks: unknown[] | null = null;
       let activeTrack: unknown = null;
+      let originalAudioLang: string | undefined;
+      let defaultCaptionTrackIndex: number | undefined;
       try {
-        const resp = player?.getPlayerResponse?.() ||
-          (globalThis.window as unknown as { ytInitialPlayerResponse?: {
-            captions?: {
-              playerCaptionsTracklistRenderer?: {
-                captionTracks?: unknown[];
-              };
-            };
-          }}).ytInitialPlayerResponse;
+        let resp = player?.getPlayerResponse?.() ?? null;
+        if (!resp) {
+          const initial = (globalThis.window as unknown as {
+            ytInitialPlayerResponse?: YouTubePlayerResponseLike;
+          }).ytInitialPlayerResponse;
+          if (initial) {
+            const currentVideoId = getCurrentWatchVideoId();
+            const initialVideoId = initial.videoDetails?.videoId || '';
+            if (!currentVideoId || initialVideoId === currentVideoId) {
+              resp = initial;
+            }
+          }
+        }
         tracks = resp?.captions?.playerCaptionsTracklistRenderer?.captionTracks || null;
+        originalAudioLang = extractOriginalAudioLang(resp);
+        defaultCaptionTrackIndex = extractDefaultCaptionTrackIndex(resp);
       } catch {
         tracks = null;
       }
@@ -155,7 +422,7 @@ export function installYouTubeMainWorldInterceptor(): void {
 
       globalThis.window?.dispatchEvent(
         new CustomEvent('wuf-yt-tracks-response', {
-          detail: { tracks, activeTrack },
+          detail: { tracks, activeTrack, originalAudioLang, defaultCaptionTrackIndex },
         }),
       );
     } catch {
@@ -165,18 +432,45 @@ export function installYouTubeMainWorldInterceptor(): void {
 
   globalThis.window?.addEventListener('wuf-yt-set-track', (e: Event) => {
     try {
-      const detail = (e as CustomEvent<{ languageCode?: string; kind?: string }>).detail;
+      const detail = (e as CustomEvent<{ languageCode?: string; kind?: string; vssId?: string }>).detail;
       if (!detail?.languageCode) return;
-      const player = (document.querySelector('#movie_player') ||
-        document.querySelector('.html5-video-player')) as unknown as {
-        loadModule?: (name: string) => void;
-        setOption?: (module: string, opt: string, val: unknown) => void;
-      };
-      player?.loadModule?.('captions');
-      player?.setOption?.('captions', 'track', {
+      const player = getPlayerElement();
+      if (!player) return;
+
+      capturePreWufSnapshot(player);
+      if (preWufSnapshot?.mutatedByWuf && preWufSnapshot.lastForcedLanguageCode) {
+        restoreStorageIfChanged(preWufSnapshot.storage, preWufSnapshot.lastForcedLanguageCode);
+      }
+      const beforeStorage = getStorageSnapshot();
+      if (preWufSnapshot) {
+        preWufSnapshot.mutatedByWuf = true;
+        preWufSnapshot.lastForcedLanguageCode = detail.languageCode;
+      }
+
+      let activeHadAutoTranslate = false;
+      try {
+        const current = player.getOption?.('captions', 'track') as CaptionTrackInfo | null | undefined;
+        activeHadAutoTranslate = hasAutoTranslation(current);
+      } catch {
+        activeHadAutoTranslate = false;
+      }
+
+      const nextTrack: Record<string, unknown> = {
         languageCode: detail.languageCode,
         kind: detail.kind || '',
-      });
+      };
+      if (detail.vssId) {
+        nextTrack.vssId = detail.vssId;
+      }
+      if (activeHadAutoTranslate) {
+        nextTrack.translationLanguage = undefined;
+      }
+
+      player.loadModule?.('captions');
+      player.setOption?.('captions', 'track', nextTrack);
+
+      restoreStorageIfChanged(beforeStorage);
+      scheduleDeferredPrefRestore(beforeStorage, detail.languageCode);
     } catch {
       // Best effort
     }
@@ -184,36 +478,44 @@ export function installYouTubeMainWorldInterceptor(): void {
 
   globalThis.window?.addEventListener('wuf-yt-set-caption-state', (e: Event) => {
     try {
-      const detail = (e as CustomEvent<{ enabled?: boolean }>).detail;
-      const player = (document.querySelector('#movie_player') ||
-        document.querySelector('.html5-video-player')) as unknown as {
-        loadModule?: (name: string) => void;
-        setOption?: (module: string, opt: string, val: unknown) => void;
-        getOption?: (module: string, opt: string) => unknown;
-        getPlayerResponse?: () => unknown;
-      };
+      const detail = (e as CustomEvent<{ enabled?: boolean; wasNativeCcEnabled?: boolean }>).detail;
+      const player = getPlayerElement();
       if (!player) return;
+
       if (detail?.enabled) {
+        capturePreWufSnapshot(player, detail.wasNativeCcEnabled);
         player.loadModule?.('captions');
-        const current = player.getOption?.('captions', 'track') as { languageCode?: string } | null | undefined;
-        if (!current?.languageCode) {
-          let tracks = player.getOption?.('captions', 'tracklist') as Array<{ languageCode: string; kind?: string }>;
-          if (!Array.isArray(tracks) || tracks.length === 0) {
-            const resp = (player.getPlayerResponse?.() ||
-              (globalThis.window as unknown as { ytInitialPlayerResponse?: { captions?: { playerCaptionsTracklistRenderer?: { captionTracks?: Array<{ languageCode: string; kind?: string }> } } } }).ytInitialPlayerResponse) as {
-              captions?: { playerCaptionsTracklistRenderer?: { captionTracks?: Array<{ languageCode: string; kind?: string }> } };
-            };
-            tracks = resp?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
-          }
-          if (Array.isArray(tracks) && tracks.length > 0) {
+      } else {
+        clearDeferredPrefRestore();
+        const snapshot = preWufSnapshot;
+        preWufSnapshot = null;
+        if (!snapshot) return;
+
+        if (snapshot.mutatedByWuf) {
+          restoreStorageIfChanged(snapshot.storage, snapshot.lastForcedLanguageCode ?? undefined);
+        }
+
+        if (snapshot.wasNativeCcEnabled) {
+          if (snapshot.mutatedByWuf && snapshot.activeTrack?.languageCode) {
+            const beforeRestore = getStorageSnapshot();
+            player.loadModule?.('captions');
             player.setOption?.('captions', 'track', {
-              languageCode: tracks[0].languageCode,
-              kind: tracks[0].kind || '',
+              languageCode: snapshot.activeTrack.languageCode,
+              kind: snapshot.activeTrack.kind || '',
+              ...(snapshot.activeTrack.vssId ? { vssId: snapshot.activeTrack.vssId } : {}),
             });
+            restoreStorageIfChanged(beforeRestore);
+          }
+        } else {
+          player.setOption?.('captions', 'track', {});
+        }
+
+        if (snapshot.mutatedByWuf) {
+          restoreStorageIfChanged(snapshot.storage, snapshot.lastForcedLanguageCode ?? undefined);
+          if (snapshot.lastForcedLanguageCode) {
+            scheduleDeferredPrefRestore(snapshot.storage, snapshot.lastForcedLanguageCode);
           }
         }
-      } else {
-        player.setOption?.('captions', 'track', {});
       }
     } catch {
       // Best effort

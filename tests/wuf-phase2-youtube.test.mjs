@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 
 import {
   chooseBestCaptionTrack,
+  hasAutoTranslation,
+  isAsrTrack,
   splitLongSubtitleCue,
   heuristicMergeAsr,
   parseCaptionResponse,
@@ -18,21 +20,166 @@ test('YouTube Caption Selection: respects strict priority order', () => {
     { languageCode: 'zh-TW', kind: undefined },
   ];
 
-  // 1. Exact target match (zh-TW)
+  // 1. Exact target match (zh-TW) -> native passthrough
   const choiceTw = chooseBestCaptionTrack(tracks, null, 'zh-TW');
   assert.equal(choiceTw.track?.languageCode, 'zh-TW');
   assert.equal(choiceTw.action, 'switch-to-native');
+  assert.equal(choiceTw.nativeMode, 'passthrough');
 
-  // 2. Chinese variant when target is zh-TW but only zh-Hans exists
+  // 2. Simplified Chinese manual when target is zh-TW -> switch-to-native + opencc-if-enabled
   const tracksNoTw = tracks.filter(t => t.languageCode !== 'zh-TW');
   const choiceHans = chooseBestCaptionTrack(tracksNoTw, null, 'zh-TW');
   assert.equal(choiceHans.track?.languageCode, 'zh-Hans');
+  assert.equal(choiceHans.action, 'switch-to-native');
+  assert.equal(choiceHans.nativeMode, 'opencc-if-enabled');
 
   // 3. Manual English fallback when no Chinese tracks exist
   const tracksOnlyEn = tracks.filter(t => t.languageCode === 'en');
   const choiceEn = chooseBestCaptionTrack(tracksOnlyEn, null, 'zh-TW');
   assert.equal(choiceEn.track?.languageCode, 'en');
   assert.equal(choiceEn.track?.kind, undefined); // Must be manual, not ASR
+});
+
+test('YouTube Caption Selection: native Chinese variants, originalAudioLang, active manual, ASR fallback, and tlang detection', () => {
+  // isAsrTrack detects vssId 'a.' prefix even without kind='asr'
+  assert.equal(isAsrTrack({ languageCode: 'en', vssId: 'a.en' }), true);
+  assert.equal(isAsrTrack({ languageCode: 'en', vssId: '.en' }), false);
+
+  // hasAutoTranslation detects both translationLanguage object and translationLanguageCode string
+  assert.equal(hasAutoTranslation({ languageCode: 'en', translationLanguage: { languageCode: 'zh-Hant' } }), true);
+  assert.equal(hasAutoTranslation({ languageCode: 'en', translationLanguageCode: 'zh-Hant' }), true);
+  assert.equal(hasAutoTranslation({ languageCode: 'en', translationLanguage: {} }), false);
+  assert.equal(hasAutoTranslation({ languageCode: 'en', translationLanguage: { languageCode: '' } }), false);
+  assert.equal(hasAutoTranslation({ languageCode: 'en', translationLanguage: { languageCode: undefined } }), false);
+  assert.equal(hasAutoTranslation({ languageCode: 'en' }), false);
+
+  // Traditional manual priority: zh-TW > zh-Hant > zh-HK > zh-CN > zh-Hans > zh
+  const hantOverHk = chooseBestCaptionTrack(
+    [{ languageCode: 'zh-HK' }, { languageCode: 'zh-Hant' }, { languageCode: 'zh-CN' }],
+    null,
+    'zh-TW',
+  );
+  assert.equal(hantOverHk.track?.languageCode, 'zh-Hant');
+  assert.equal(hantOverHk.action, 'switch-to-native');
+  assert.equal(hantOverHk.nativeMode, 'passthrough');
+
+  const cnOverHans = chooseBestCaptionTrack(
+    [{ languageCode: 'zh' }, { languageCode: 'zh-Hans' }, { languageCode: 'zh-CN' }],
+    { languageCode: 'zh-CN' },
+    'zh-TW',
+  );
+  assert.equal(cnOverHans.track?.languageCode, 'zh-CN');
+  assert.equal(cnOverHans.action, 'skip');
+  assert.equal(cnOverHans.nativeMode, 'opencc-if-enabled');
+
+  // Simplified target (zh-CN) uses passthrough for simplified tracks
+  const simpTarget = chooseBestCaptionTrack(
+    [{ languageCode: 'zh-Hans' }, { languageCode: 'zh-TW' }],
+    null,
+    'zh-CN',
+  );
+  assert.equal(simpTarget.track?.languageCode, 'zh-Hans');
+  assert.equal(simpTarget.action, 'switch-to-native');
+  assert.equal(simpTarget.nativeMode, 'passthrough');
+
+  // Active track with YT auto-translate (`translationLanguage`) must NEVER be treated as same track
+  const tlangSwitch = chooseBestCaptionTrack(
+    [{ languageCode: 'en', vssId: '.en' }],
+    { languageCode: 'en', vssId: '.en', translationLanguage: { languageCode: 'zh-Hant' } },
+    'zh-TW',
+  );
+  assert.equal(tlangSwitch.action, 'switch');
+  assert.equal(tlangSwitch.track?.languageCode, 'en');
+
+  // vssId mismatch forces switch even when languageCode matches
+  const vssSwitch = chooseBestCaptionTrack(
+    [{ languageCode: 'zh-TW', vssId: '.zh-TW.1' }],
+    { languageCode: 'zh-TW', vssId: '.zh-TW' },
+    'zh-TW',
+  );
+  assert.equal(vssSwitch.action, 'switch-to-native');
+
+  // Creator original-language manual beats manual English
+  const origManualBeatsEn = chooseBestCaptionTrack(
+    [{ languageCode: 'en' }, { languageCode: 'ja' }],
+    { languageCode: 'en' },
+    'zh-TW',
+    { originalAudioLang: 'ja' },
+  );
+  assert.equal(origManualBeatsEn.track?.languageCode, 'ja');
+  assert.equal(origManualBeatsEn.action, 'switch');
+
+  // Already-active non-ASR manual track is kept when no native target / origAudioLang match
+  const keepActiveManual = chooseBestCaptionTrack(
+    [{ languageCode: 'en' }, { languageCode: 'fr' }],
+    { languageCode: 'fr' },
+    'zh-TW',
+  );
+  assert.equal(keepActiveManual.track?.languageCode, 'fr');
+  assert.equal(keepActiveManual.action, 'noop');
+
+  // defaultCaptionTrackIndex manual beats manual English when no active manual
+  const defaultManualBeatsEn = chooseBestCaptionTrack(
+    [{ languageCode: 'en' }, { languageCode: 'ko' }],
+    null,
+    'zh-TW',
+    { defaultCaptionTrackIndex: 1 },
+  );
+  assert.equal(defaultManualBeatsEn.track?.languageCode, 'ko');
+  assert.equal(defaultManualBeatsEn.action, 'switch');
+
+  // Creator manual ALWAYS beats ASR (even Chinese ASR)
+  const manualBeatsChineseAsr = chooseBestCaptionTrack(
+    [{ languageCode: 'zh-Hans', kind: 'asr' }, { languageCode: 'ja' }],
+    null,
+    'zh-TW',
+  );
+  assert.equal(manualBeatsChineseAsr.track?.languageCode, 'ja');
+  assert.equal(manualBeatsChineseAsr.action, 'switch');
+
+  // Chinese ASR fallback (when NO manual tracks exist) -> no LLM (opencc-if-enabled / passthrough)
+  const zhAsrOnly = chooseBestCaptionTrack(
+    [{ languageCode: 'zh-Hans', kind: 'asr' }],
+    null,
+    'zh-TW',
+  );
+  assert.equal(zhAsrOnly.track?.languageCode, 'zh-Hans');
+  assert.equal(zhAsrOnly.action, 'switch-to-native');
+  assert.equal(zhAsrOnly.nativeMode, 'opencc-if-enabled');
+
+  const zhTwAsrActive = chooseBestCaptionTrack(
+    [{ languageCode: 'zh-TW', vssId: 'a.zh-TW' }],
+    { languageCode: 'zh-TW', vssId: 'a.zh-TW' },
+    'zh-TW',
+  );
+  assert.equal(zhTwAsrActive.action, 'skip');
+  assert.equal(zhTwAsrActive.nativeMode, 'passthrough');
+
+  // Non-Chinese ASR fallback: originalAudioLang > defaultCaptionTrackIndex > single ASR > none
+  const asrOrig = chooseBestCaptionTrack(
+    [{ languageCode: 'en', kind: 'asr' }, { languageCode: 'ja', kind: 'asr' }],
+    null,
+    'zh-TW',
+    { originalAudioLang: 'ja' },
+  );
+  assert.equal(asrOrig.track?.languageCode, 'ja');
+  assert.equal(asrOrig.action, 'switch');
+
+  const asrDefault = chooseBestCaptionTrack(
+    [{ languageCode: 'en', kind: 'asr' }, { languageCode: 'ja', kind: 'asr' }],
+    null,
+    'zh-TW',
+    { defaultCaptionTrackIndex: 0 },
+  );
+  assert.equal(asrDefault.track?.languageCode, 'en');
+  assert.equal(asrDefault.action, 'switch');
+
+  const asrAmbiguous = chooseBestCaptionTrack(
+    [{ languageCode: 'en', kind: 'asr' }, { languageCode: 'ja', kind: 'asr' }],
+    null,
+    'zh-TW',
+  );
+  assert.equal(asrAmbiguous.action, 'none');
 });
 
 test('YouTube Cue Splitting: 24-character word boundary snapping without mid-word cuts', () => {

@@ -11,6 +11,7 @@ export interface CaptionTrackInfo {
   name?: { simpleText?: string } | string;
   vssId?: string;
   isTranslatable?: boolean;
+  translationLanguage?: { languageCode?: string; languageName?: unknown } | string | null;
   translationLanguageCode?: string;
 }
 
@@ -20,18 +21,65 @@ export interface CaptionTrackHints {
   defaultCaptionTrackIndex?: number;
 }
 
+export type NativeSubtitleMode = 'passthrough' | 'opencc-if-enabled';
+
 export interface ChosenCaptionTrackResult {
   track?: CaptionTrackInfo;
   sourceLanguage?: string;
   action: 'skip' | 'switch-to-native' | 'switch' | 'noop' | 'none';
+  nativeMode?: NativeSubtitleMode;
+}
+
+function normalizeLangCode(code: string | undefined): string {
+  return (code || '').trim().toLowerCase().replace(/_/g, '-');
 }
 
 function baseLang(code: string | undefined): string {
-  return (code || '').trim().toLowerCase().split(/[-_]/)[0] || '';
+  return normalizeLangCode(code).split('-')[0] || '';
 }
 
-function isAsrTrack(track: CaptionTrackInfo): boolean {
-  return (track.kind || '').toLowerCase() === 'asr';
+function isTraditionalChineseCode(code: string | undefined): boolean {
+  const norm = normalizeLangCode(code);
+  return (
+    norm === 'zh-tw' ||
+    norm === 'zh-hant' ||
+    norm === 'zh-hk' ||
+    norm === 'zh-mo' ||
+    norm.startsWith('zh-hant-')
+  );
+}
+
+export function isAsrTrack(track: CaptionTrackInfo): boolean {
+  return (
+    (track.kind || '').toLowerCase() === 'asr' ||
+    Boolean(track.vssId?.startsWith('a.'))
+  );
+}
+
+export function hasAutoTranslation(track: CaptionTrackInfo | null | undefined): boolean {
+  if (!track) return false;
+  if (
+    typeof track.translationLanguageCode === 'string' &&
+    track.translationLanguageCode.trim().length > 0
+  ) {
+    return true;
+  }
+  const tl = track.translationLanguage;
+  if (!tl) return false;
+  if (typeof tl === 'string') return tl.trim().length > 0;
+  if (typeof tl === 'object') {
+    if (typeof tl.languageCode === 'string') {
+      return tl.languageCode.trim().length > 0;
+    }
+    return Object.values(tl).some(v =>
+      typeof v === 'string'
+        ? v.trim().length > 0
+        : v !== null &&
+          v !== undefined &&
+          (typeof v !== 'object' || Object.keys(v as Record<string, unknown>).length > 0),
+    );
+  }
+  return false;
 }
 
 function isSameTrack(
@@ -39,13 +87,58 @@ function isSameTrack(
   b: CaptionTrackInfo | null | undefined,
 ): boolean {
   if (!a || !b) return false;
+  if (hasAutoTranslation(a) || hasAutoTranslation(b)) return false;
+  if (a === b) return true;
+  if (a.vssId && b.vssId && a.vssId !== b.vssId) return false;
   return (
-    a === b ||
-    (a.languageCode === b.languageCode &&
-      Boolean(isAsrTrack(a)) === Boolean(isAsrTrack(b)) &&
-      !a.translationLanguageCode &&
-      !b.translationLanguageCode)
+    normalizeLangCode(a.languageCode) === normalizeLangCode(b.languageCode) &&
+    Boolean(isAsrTrack(a)) === Boolean(isAsrTrack(b))
   );
+}
+
+function pickChineseTrack(
+  candidates: CaptionTrackInfo[],
+  targetLower: string,
+): { track: CaptionTrackInfo; nativeMode: NativeSubtitleMode } | null {
+  const zhCandidates = candidates.filter(t => baseLang(t.languageCode) === 'zh');
+  if (zhCandidates.length === 0) return null;
+
+  const isTraditionalTarget = isTraditionalChineseCode(targetLower);
+
+  const exact = zhCandidates.find(t => normalizeLangCode(t.languageCode) === targetLower);
+  if (exact) {
+    return {
+      track: exact,
+      nativeMode:
+        isTraditionalTarget && !isTraditionalChineseCode(exact.languageCode)
+          ? 'opencc-if-enabled'
+          : 'passthrough',
+    };
+  }
+
+  const findByCode = (code: string) =>
+    zhCandidates.find(t => normalizeLangCode(t.languageCode) === code);
+
+  const tradTrack =
+    findByCode('zh-tw') ||
+    findByCode('zh-hant') ||
+    findByCode('zh-hk') ||
+    zhCandidates.find(t => isTraditionalChineseCode(t.languageCode));
+
+  const simpTrack =
+    findByCode('zh-cn') ||
+    findByCode('zh-hans') ||
+    findByCode('zh') ||
+    zhCandidates.find(t => !isTraditionalChineseCode(t.languageCode));
+
+  if (isTraditionalTarget) {
+    if (tradTrack) return { track: tradTrack, nativeMode: 'passthrough' };
+    if (simpTrack) return { track: simpTrack, nativeMode: 'opencc-if-enabled' };
+  } else {
+    if (simpTrack) return { track: simpTrack, nativeMode: 'passthrough' };
+    if (tradTrack) return { track: tradTrack, nativeMode: 'passthrough' };
+  }
+  return null;
 }
 
 /** Extracts the active YouTube video ID from watch query (`?v=`) or `/shorts|/embed|/live` paths. */
@@ -65,8 +158,10 @@ export function getCurrentWatchVideoId(
 
 /**
  * Selects the optimal YouTube caption track following WUF priority rules:
- * Manual exact target > Manual Chinese variant > Manual English >
- * Manual original audio > Original-language ASR > Unambiguous default/unique ASR.
+ * 1. Native target manual (for zh targets: Traditional > Simplified/generic, never LLM-translated)
+ * 2. Creator original-language manual
+ * 3. Other creator manual (already-active non-tlang manual > defaultCaptionTrackIndex > en > first)
+ * 4. ASR fallback ONLY when no manual track exists (Chinese ASR -> native/OpenCC; else orig > default > single)
  */
 export function chooseBestCaptionTrack(
   tracks: CaptionTrackInfo[],
@@ -80,56 +175,38 @@ export function chooseBestCaptionTrack(
 
   const normalizedHints: CaptionTrackHints =
     hints && typeof hints === 'object' ? hints : {};
-  const targetLower = (targetLanguage || 'zh-TW').trim().toLowerCase();
+  const targetLower = normalizeLangCode(targetLanguage || 'zh-TW');
   const targetBase = baseLang(targetLower);
 
   const manualTracks = tracks.filter(t => !isAsrTrack(t));
   const asrTracks = tracks.filter(t => isAsrTrack(t));
 
-  // 1. Exact manual target match (e.g. zh-TW when target is zh-TW)
-  const exactManual = manualTracks.find(
-    t => t.languageCode.toLowerCase() === targetLower,
-  );
-  if (exactManual) {
-    if (isSameTrack(activeTrack, exactManual)) {
+  // 1. Native target manual track
+  if (targetBase === 'zh') {
+    const zhManual = pickChineseTrack(manualTracks, targetLower);
+    if (zhManual) {
+      return {
+        track: zhManual.track,
+        sourceLanguage: zhManual.track.languageCode,
+        action: isSameTrack(activeTrack, zhManual.track) ? 'skip' : 'switch-to-native',
+        nativeMode: zhManual.nativeMode,
+      };
+    }
+  } else {
+    const exactManual = manualTracks.find(
+      t => normalizeLangCode(t.languageCode) === targetLower,
+    );
+    if (exactManual) {
       return {
         track: exactManual,
         sourceLanguage: exactManual.languageCode,
-        action: 'skip',
-      };
-    }
-    return {
-      track: exactManual,
-      sourceLanguage: exactManual.languageCode,
-      action: 'switch-to-native',
-    };
-  }
-
-  // 2. Manual same-base Chinese variant (e.g. zh, zh-CN, zh-Hans when target is zh-TW)
-  if (targetBase === 'zh') {
-    const chineseVariantManual = manualTracks.find(
-      t => baseLang(t.languageCode) === 'zh',
-    );
-    if (chineseVariantManual) {
-      return {
-        track: chineseVariantManual,
-        sourceLanguage: chineseVariantManual.languageCode,
-        action: isSameTrack(activeTrack, chineseVariantManual) ? 'noop' : 'switch',
+        action: isSameTrack(activeTrack, exactManual) ? 'skip' : 'switch-to-native',
+        nativeMode: 'passthrough',
       };
     }
   }
 
-  // 3. Manual English track
-  const manualEnglish = manualTracks.find(t => baseLang(t.languageCode) === 'en');
-  if (manualEnglish) {
-    return {
-      track: manualEnglish,
-      sourceLanguage: manualEnglish.languageCode,
-      action: isSameTrack(activeTrack, manualEnglish) ? 'noop' : 'switch',
-    };
-  }
-
-  // 4. Manual original audio language track (or first available manual track)
+  // 2. Creator original-language manual track
   const origBase = baseLang(normalizedHints.originalAudioLang);
   if (origBase) {
     const manualOrig = manualTracks.find(t => baseLang(t.languageCode) === origBase);
@@ -141,7 +218,48 @@ export function chooseBestCaptionTrack(
       };
     }
   }
+
+  // 3. Other creator manual tracks (always beat ASR)
   if (manualTracks.length > 0) {
+    // 3a. Keep already-active non-ASR manual track if not YT auto-translated
+    if (activeTrack && !isAsrTrack(activeTrack) && !hasAutoTranslation(activeTrack)) {
+      const activeManual = manualTracks.find(t => isSameTrack(activeTrack, t));
+      if (activeManual) {
+        return {
+          track: activeManual,
+          sourceLanguage: activeManual.languageCode,
+          action: 'noop',
+        };
+      }
+    }
+
+    // 3b. Default caption track if manual
+    if (
+      typeof normalizedHints.defaultCaptionTrackIndex === 'number' &&
+      normalizedHints.defaultCaptionTrackIndex >= 0 &&
+      normalizedHints.defaultCaptionTrackIndex < tracks.length
+    ) {
+      const defaultTrack = tracks[normalizedHints.defaultCaptionTrackIndex];
+      if (defaultTrack && !isAsrTrack(defaultTrack)) {
+        return {
+          track: defaultTrack,
+          sourceLanguage: defaultTrack.languageCode,
+          action: isSameTrack(activeTrack, defaultTrack) ? 'noop' : 'switch',
+        };
+      }
+    }
+
+    // 3c. Manual English track
+    const manualEnglish = manualTracks.find(t => baseLang(t.languageCode) === 'en');
+    if (manualEnglish) {
+      return {
+        track: manualEnglish,
+        sourceLanguage: manualEnglish.languageCode,
+        action: isSameTrack(activeTrack, manualEnglish) ? 'noop' : 'switch',
+      };
+    }
+
+    // 3d. First available manual track
     const firstManual = manualTracks[0];
     return {
       track: firstManual,
@@ -150,27 +268,39 @@ export function chooseBestCaptionTrack(
     };
   }
 
-  // 5. ASR tracks: if originalAudioLang is known, ONLY accept ASR matching originalAudioLang
-  if (origBase) {
-    const origAsr = asrTracks.find(t => baseLang(t.languageCode) === origBase);
-    if (!origAsr) {
-      return { action: 'none' };
+  // 4. ASR fallback (ONLY when manualTracks.length === 0)
+  if (targetBase === 'zh') {
+    const zhAsr = pickChineseTrack(asrTracks, targetLower);
+    if (zhAsr) {
+      return {
+        track: zhAsr.track,
+        sourceLanguage: zhAsr.track.languageCode,
+        action: isSameTrack(activeTrack, zhAsr.track) ? 'skip' : 'switch-to-native',
+        nativeMode: zhAsr.nativeMode,
+      };
     }
-    return {
-      track: origAsr,
-      sourceLanguage: origAsr.languageCode,
-      action: isSameTrack(activeTrack, origAsr) ? 'noop' : 'switch',
-    };
   }
 
-  // 6. ASR with explicit defaultCaptionTrackIndex
+  // 4a. ASR matching originalAudioLang
+  if (origBase) {
+    const origAsr = asrTracks.find(t => baseLang(t.languageCode) === origBase);
+    if (origAsr) {
+      return {
+        track: origAsr,
+        sourceLanguage: origAsr.languageCode,
+        action: isSameTrack(activeTrack, origAsr) ? 'noop' : 'switch',
+      };
+    }
+  }
+
+  // 4b. ASR with explicit defaultCaptionTrackIndex
   if (
     typeof normalizedHints.defaultCaptionTrackIndex === 'number' &&
     normalizedHints.defaultCaptionTrackIndex >= 0 &&
     normalizedHints.defaultCaptionTrackIndex < tracks.length
   ) {
     const candidate = tracks[normalizedHints.defaultCaptionTrackIndex];
-    if (candidate) {
+    if (candidate && isAsrTrack(candidate)) {
       return {
         track: candidate,
         sourceLanguage: candidate.languageCode,
@@ -179,7 +309,7 @@ export function chooseBestCaptionTrack(
     }
   }
 
-  // 7. Single unambiguous ASR track
+  // 4c. Single unambiguous ASR track
   if (asrTracks.length === 1) {
     const onlyAsr = asrTracks[0];
     return {
